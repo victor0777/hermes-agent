@@ -289,13 +289,89 @@ def _build_job_prompt(job: dict) -> str:
     return "\n".join(parts)
 
 
+def _run_collaboration_monitor_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a deterministic collaboration monitor cron job."""
+    job_id = job["id"]
+    job_name = job["name"]
+    metadata = job.get("metadata") or {}
+    monitor_kind = str(metadata.get("monitor_kind") or "").strip().lower()
+    limit = max(1, int(metadata.get("limit") or 20))
+    project = str(metadata.get("project") or "")
+
+    logger.info("Running collaboration monitor job '%s' (ID: %s)", job_name, job_id)
+
+    try:
+        from tools.collaboration_monitor import run_monitor
+
+        result = run_monitor(monitor_kind, limit=limit, project=project)
+        final_response = str(result.get("text") or "")
+        success = bool(result.get("success"))
+        error = None if success else str(result.get("error") or "monitor failed")
+        status = "completed successfully" if success else "failed"
+
+        output = f"""# Cron Job: {job_name}
+
+**Job ID:** {job_id}
+**Type:** collaboration_monitor
+**Monitor Kind:** {monitor_kind or 'N/A'}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+**Status:** {status}
+
+## Metadata
+
+```json
+{json.dumps(metadata, ensure_ascii=False, indent=2)}
+```
+
+## Response
+
+{final_response or '(No response generated)'}
+"""
+        if success:
+            logger.info("Collaboration monitor job '%s' completed successfully", job_name)
+        else:
+            logger.error("Collaboration monitor job '%s' failed: %s", job_name, error)
+        return success, output, final_response, error
+
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {str(e)}"
+        logger.error("Collaboration monitor job '%s' failed: %s", job_name, error_msg)
+        output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Type:** collaboration_monitor
+**Monitor Kind:** {monitor_kind or 'N/A'}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Metadata
+
+```json
+{json.dumps(metadata, ensure_ascii=False, indent=2)}
+```
+
+## Error
+
+```
+{error_msg}
+
+{traceback.format_exc()}
+```
+"""
+        return False, output, "", error_msg
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
-    
+
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
+    if job.get("type", "agent") == "collaboration_monitor":
+        return _run_collaboration_monitor_job(job)
+
     from run_agent import AIAgent
     
     # Initialize SQLite session store so cron job messages are persisted

@@ -161,6 +161,92 @@ class TestGatewayQuickCommands:
         handler.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_collab_monitor_run_uses_monitor_when_gateway_gate_enabled(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner.hooks = MagicMock()
+        runner.hooks.emit = AsyncMock()
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("collab", "monitor run urgent")
+        with patch("hermes_cli.commands._is_gateway_available", return_value=True), \
+             patch("tools.collaboration_monitor.run_monitor", return_value={
+                 "success": True,
+                 "text": "urgent monitor result",
+             }) as monitor:
+            result = await runner._handle_message(event)
+
+        assert result == "urgent monitor result"
+        monitor.assert_called_once()
+        assert monitor.call_args.args == ("urgent_alert",)
+        assert monitor.call_args.kwargs["limit"] == 20
+        assert monitor.call_args.kwargs["project"] == ""
+        assert monitor.call_args.kwargs["config"]["gateway_install_enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_collab_monitor_install_refused_by_default_from_gateway(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner.hooks = MagicMock()
+        runner.hooks.emit = AsyncMock()
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("collab", "monitor install urgent")
+        with patch("hermes_cli.commands._is_gateway_available", return_value=True), \
+             patch("tools.cronjob_tools.cronjob") as cronjob:
+            result = await runner._handle_message(event)
+
+        assert "installing collaboration monitor jobs from gateway is disabled" in result.lower()
+        cronjob.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_collab_monitor_install_allowed_when_gateway_install_enabled(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner.hooks = MagicMock()
+        runner.hooks.emit = AsyncMock()
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        config = {
+            "collaboration": {
+                "monitor": {
+                    "gateway_install_enabled": True,
+                    "urgent_schedule": "every 4h",
+                    "deliver": "local",
+                    "limit": 5,
+                    "project": "hermes-agent",
+                }
+            }
+        }
+        event = self._make_event("collab", "monitor install urgent")
+        with patch("hermes_cli.commands._is_gateway_available", return_value=True), \
+             patch("hermes_cli.config.load_config", return_value=config), \
+             patch("tools.cronjob_tools.cronjob", return_value='{"success": true}') as cronjob:
+            result = await runner._handle_message(event)
+
+        assert '"success": true' in result
+        cronjob.assert_called_once_with(
+            action="create_collaboration_monitor",
+            monitor_kind="urgent_alert",
+            schedule="every 4h",
+            deliver="local",
+            limit=5,
+            project="hermes-agent",
+        )
+
+    @pytest.mark.asyncio
     async def test_unsupported_type_returns_error(self):
         from gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)

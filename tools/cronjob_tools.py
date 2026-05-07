@@ -119,6 +119,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "job_id": job["id"],
         "name": job["name"],
+        "type": job.get("type", "agent"),
+        "metadata": job.get("metadata", {}),
         "skill": skills[0] if skills else None,
         "skills": skills,
         "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
@@ -153,6 +155,9 @@ def cronjob(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
+    monitor_kind: Optional[str] = None,
+    limit: int = 20,
+    project: str = "",
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -160,6 +165,44 @@ def cronjob(
 
     try:
         normalized = (action or "").strip().lower()
+
+        if normalized == "create_collaboration_monitor":
+            if not schedule:
+                return json.dumps({"success": False, "error": "schedule is required for create_collaboration_monitor"}, indent=2)
+            normalized_kind = (monitor_kind or "").strip().lower()
+            if normalized_kind not in {"daily_brief", "urgent_alert"}:
+                return json.dumps({"success": False, "error": "monitor_kind must be one of: daily_brief, urgent_alert"}, indent=2)
+            safe_limit = max(1, int(limit or 20))
+            job = create_job(
+                prompt="",
+                schedule=schedule,
+                name=name or f"collaboration {normalized_kind.replace('_', ' ')}",
+                repeat=repeat,
+                deliver=deliver or "local",
+                origin=_origin_from_env(),
+                job_type="collaboration_monitor",
+                metadata={
+                    "monitor_kind": normalized_kind,
+                    "limit": safe_limit,
+                    "project": str(project or ""),
+                },
+            )
+            return json.dumps(
+                {
+                    "success": True,
+                    "job_id": job["id"],
+                    "name": job["name"],
+                    "type": job.get("type"),
+                    "monitor_kind": normalized_kind,
+                    "schedule": job["schedule_display"],
+                    "repeat": _repeat_display(job),
+                    "deliver": job.get("deliver", "local"),
+                    "next_run_at": job["next_run_at"],
+                    "job": _format_job(job),
+                    "message": f"Collaboration monitor job '{job['name']}' created.",
+                },
+                indent=2,
+            )
 
         if normalized == "create":
             if not schedule:
@@ -348,7 +391,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run"
+                "description": "One of: create, create_collaboration_monitor, list, update, pause, resume, remove, run"
             },
             "job_id": {
                 "type": "string",
@@ -402,6 +445,18 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "reason": {
                 "type": "string",
                 "description": "Optional pause reason"
+            },
+            "monitor_kind": {
+                "type": "string",
+                "description": "For create_collaboration_monitor: daily_brief or urgent_alert"
+            },
+            "limit": {
+                "type": "integer",
+                "description": "For create_collaboration_monitor: maximum collaboration items to inspect"
+            },
+            "project": {
+                "type": "string",
+                "description": "For create_collaboration_monitor: optional collaboration project filter"
             }
         },
         "required": ["action"]
@@ -451,6 +506,9 @@ registry.register(
         provider=args.get("provider"),
         base_url=args.get("base_url"),
         reason=args.get("reason"),
+        monitor_kind=args.get("monitor_kind"),
+        limit=args.get("limit", 20),
+        project=args.get("project", ""),
         task_id=kw.get("task_id"),
     ),
     check_fn=check_cronjob_requirements,

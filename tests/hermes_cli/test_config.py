@@ -68,6 +68,15 @@ class TestLoadConfigDefaults:
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
 
+    def test_collaboration_monitor_defaults_are_disabled(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            monitor = load_config()["collaboration"]["monitor"]
+            assert monitor["enabled"] is False
+            assert monitor["daily_brief_enabled"] is False
+            assert monitor["urgent_alerts_enabled"] is False
+            assert monitor["read_only"] is True
+            assert monitor["gateway_install_enabled"] is False
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

@@ -205,6 +205,34 @@ class TestScheduleCronjob:
         job = _jobs.get_job(job_id)
         assert job["origin"].get("thread_id") is None
 
+    def test_create_collaboration_monitor_job(self):
+        result = json.loads(cronjob(
+            action="create_collaboration_monitor",
+            monitor_kind="urgent_alert",
+            schedule="every 4h",
+            project="hermes-agent",
+            limit=7,
+        ))
+        assert result["success"] is True
+        assert result["type"] == "collaboration_monitor"
+        assert result["deliver"] == "local"
+        job = result["job"]
+        assert job["type"] == "collaboration_monitor"
+        assert job["metadata"] == {
+            "monitor_kind": "urgent_alert",
+            "limit": 7,
+            "project": "hermes-agent",
+        }
+
+    def test_create_collaboration_monitor_rejects_invalid_kind(self):
+        result = json.loads(cronjob(
+            action="create_collaboration_monitor",
+            monitor_kind="write_actions",
+            schedule="every 4h",
+        ))
+        assert result["success"] is False
+        assert "monitor_kind" in result["error"]
+
 
 # =========================================================================
 # list_cronjobs

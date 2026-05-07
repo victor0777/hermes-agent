@@ -216,6 +216,21 @@ DEFAULT_CONFIG = {
         "auth_token_env": "COLLABORATION_API_TOKEN",
         "default_project": "",
         "gateway_brief_enabled": False,
+        "monitor": {
+            "enabled": False,
+            "daily_brief_enabled": False,
+            "urgent_alerts_enabled": False,
+            "daily_schedule": "57 8 * * *",
+            "urgent_schedule": "every 4h",
+            "deliver": "local",
+            "limit": 20,
+            "project": "",
+            "alert_on_high_priority": True,
+            "alert_on_overdue": True,
+            "alert_on_blockers": True,
+            "read_only": True,
+            "gateway_install_enabled": False,
+        },
     },
 
     "terminal": {

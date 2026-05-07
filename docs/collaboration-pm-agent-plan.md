@@ -355,30 +355,58 @@ Exit criteria:
 
 Goal:
 
-Run PM checks automatically and send concise alerts.
+Run deterministic read-only PM checks automatically and send concise alerts without invoking the generic LLM agent loop.
 
-Schedules:
+Implemented monitor kinds:
 
-- daily morning brief
-- periodic overdue monitor
-- weekly project-management review
+- `daily_brief`: runs the existing read-only collaboration brief formatter.
+- `urgent_alert`: checks open high-priority requests, overdue requests, and blockers.
 
-Recommended defaults:
+Default config:
 
-- daily brief: once per morning
-- overdue monitor: every 4–6 hours
-- weekly review: once per week
+```yaml
+collaboration:
+  monitor:
+    enabled: false
+    daily_brief_enabled: false
+    urgent_alerts_enabled: false
+    daily_schedule: "57 8 * * *"
+    urgent_schedule: "every 4h"
+    deliver: "local"
+    limit: 20
+    project: ""
+    alert_on_high_priority: true
+    alert_on_overdue: true
+    alert_on_blockers: true
+    read_only: true
+    gateway_install_enabled: false
+```
+
+Commands:
+
+- `/collab monitor status` shows monitor config and installed monitor jobs.
+- `/collab monitor run daily` runs one daily brief immediately.
+- `/collab monitor run urgent` runs one urgent alert check immediately.
+- `/collab monitor install daily` creates a local Hermes cron job for daily briefs.
+- `/collab monitor install urgent` creates a local Hermes cron job for urgent alerts.
+
+Gateway behavior:
+
+- Gateway `/collab monitor status` and `/collab monitor run ...` remain behind `collaboration.gateway_brief_enabled`.
+- Gateway `/collab monitor install ...` is refused unless `collaboration.monitor.gateway_install_enabled=true`.
+- The monitor never writes to collaboration shared state.
 
 Alert policy:
 
-- Alert only on meaningful changes or high-priority stale items.
-- Avoid repeating the same unchanged warning every interval.
-- Include direct request/project identifiers.
+- Urgent checks return `[SILENT]` when no configured urgent condition exists.
+- Alert text includes compact top items and suggested next actions.
+- Persistent deduplication is intentionally out of scope for the first scheduled monitor pass.
 
 Exit criteria:
 
-- Hermes sends useful PM summaries without manual prompting.
-- Repeated alerts are deduplicated or summarized.
+- Hermes can run local typed cron jobs for daily and urgent collaboration monitoring.
+- Urgent monitor jobs suppress no-op notifications.
+- Gateway job installation remains disabled by default.
 
 ### Phase 4 — Approval-gated write actions
 

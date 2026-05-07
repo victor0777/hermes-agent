@@ -375,6 +375,8 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    job_type: str = "agent",
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -391,6 +393,8 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        job_type: Job runner type; legacy jobs default to "agent"
+        metadata: Optional typed-job metadata
 
     Returns:
         The created job dict
@@ -424,6 +428,8 @@ def create_job(
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
+        "type": str(job_type or "agent").strip() or "agent",
+        "metadata": dict(metadata or {}),
         "prompt": prompt,
         "skills": normalized_skills,
         "skill": normalized_skills[0] if normalized_skills else None,

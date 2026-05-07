@@ -285,6 +285,35 @@ class TestDeliverResultWrapping:
 
 
 class TestRunJobSessionPersistence:
+    def test_run_job_routes_collaboration_monitor_without_agent(self):
+        job = {
+            "id": "monitor-job",
+            "name": "collaboration urgent alert",
+            "type": "collaboration_monitor",
+            "metadata": {
+                "monitor_kind": "urgent_alert",
+                "limit": 7,
+                "project": "hermes-agent",
+            },
+            "schedule_display": "every 4h",
+        }
+
+        with patch("tools.collaboration_monitor.run_monitor", return_value={
+            "success": True,
+            "text": "monitor result",
+            "counts": {"high_priority": 1},
+        }) as monitor_mock, \
+             patch("run_agent.AIAgent") as agent_mock:
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "monitor result"
+        assert "collaboration_monitor" in output
+        assert "monitor result" in output
+        monitor_mock.assert_called_once_with("urgent_alert", limit=7, project="hermes-agent")
+        agent_mock.assert_not_called()
+
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
         job = {
             "id": "test-job",

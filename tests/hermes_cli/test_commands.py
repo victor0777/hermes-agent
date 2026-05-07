@@ -247,6 +247,12 @@ class TestGatewayConfigGate:
         assert cmd.cli_only is True
         assert cmd.gateway_config_gate == "collaboration.gateway_brief_enabled"
 
+    def test_collab_includes_monitor_subcommand(self):
+        cmd = resolve_command("collab")
+        assert cmd is not None
+        assert "monitor" in cmd.subcommands
+        assert "monitor" in cmd.args_hint
+
     def test_verbose_in_gateway_known_commands(self):
         """Config-gated commands are always recognized by the gateway."""
         assert "verbose" in GATEWAY_KNOWN_COMMANDS

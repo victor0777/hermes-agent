@@ -3407,6 +3407,10 @@ class HermesCLI:
 
         parts = cmd.split()
         subcommand = parts[1].lower() if len(parts) > 1 else "brief"
+        if subcommand == "monitor":
+            self._handle_collab_monitor_command(parts[2:])
+            return
+
         project = parts[2] if len(parts) > 2 and subcommand == "project" else ""
         action_map = {
             "brief": "brief",
@@ -3419,7 +3423,7 @@ class HermesCLI:
         }
         action = action_map.get(subcommand)
         if not action:
-            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>]")
+            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|monitor status|monitor run <daily|urgent>|monitor install <daily|urgent>]")
             return
         if subcommand == "project" and not project:
             _cprint("  Usage: /collab project <name>")
@@ -3437,6 +3441,68 @@ class HermesCLI:
             _cprint(f"  Collaboration request failed: {result.get('error', 'unknown error')}")
             return
         _cprint(json.dumps(result.get("data"), ensure_ascii=False, indent=2))
+
+    def _handle_collab_monitor_command(self, args: list[str]):
+        """Handle deterministic collaboration PM monitor commands."""
+        from hermes_cli.config import load_config
+        from tools.cronjob_tools import cronjob as cronjob_tool
+        from tools.collaboration_monitor import run_monitor
+
+        usage = "  Usage: /collab monitor status|run <daily|urgent>|install <daily|urgent>"
+        action = args[0].lower() if args else "status"
+        config = load_config().get("collaboration", {}).get("monitor", {})
+        if not isinstance(config, dict):
+            config = {}
+
+        def _kind(value: str) -> str | None:
+            normalized = (value or "").strip().lower()
+            if normalized in {"daily", "daily_brief"}:
+                return "daily_brief"
+            if normalized in {"urgent", "urgent_alert"}:
+                return "urgent_alert"
+            return None
+
+        if action == "status":
+            listing = json.loads(cronjob_tool(action="list", include_disabled=True))
+            jobs = [job for job in listing.get("jobs", []) if job.get("type") == "collaboration_monitor"]
+            _cprint(json.dumps({
+                "config": config,
+                "installed_jobs": jobs,
+            }, ensure_ascii=False, indent=2))
+            return
+
+        if action == "run" and len(args) >= 2:
+            monitor_kind = _kind(args[1])
+            if not monitor_kind:
+                _cprint(usage)
+                return
+            result = run_monitor(
+                monitor_kind,
+                limit=int(config.get("limit") or 20),
+                project=str(config.get("project") or ""),
+                config=config,
+            )
+            _cprint(result.get("text") or result.get("error") or json.dumps(result, ensure_ascii=False, indent=2))
+            return
+
+        if action == "install" and len(args) >= 2:
+            monitor_kind = _kind(args[1])
+            if not monitor_kind:
+                _cprint(usage)
+                return
+            schedule_key = "daily_schedule" if monitor_kind == "daily_brief" else "urgent_schedule"
+            result = json.loads(cronjob_tool(
+                action="create_collaboration_monitor",
+                monitor_kind=monitor_kind,
+                schedule=str(config.get(schedule_key) or ("57 8 * * *" if monitor_kind == "daily_brief" else "every 4h")),
+                deliver=str(config.get("deliver") or "local"),
+                limit=int(config.get("limit") or 20),
+                project=str(config.get("project") or ""),
+            ))
+            _cprint(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+
+        _cprint(usage)
 
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
