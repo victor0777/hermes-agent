@@ -37,6 +37,64 @@ def _no_auto_discovery(monkeypatch):
     monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", _noop)
 
 
+def _mock_webhook_app(monkeypatch):
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    updater = SimpleNamespace(
+        start_webhook=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(set_my_commands=AsyncMock())
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    return updater
+
+
+@pytest.mark.asyncio
+async def test_webhook_default_listen_host_is_localhost(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
+    updater = _mock_webhook_app(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "https://example.com/telegram")
+    monkeypatch.delenv("TELEGRAM_WEBHOOK_HOST", raising=False)
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert updater.start_webhook.await_args.kwargs["listen"] == "127.0.0.1"
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_webhook_listen_host_env_override_is_preserved(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
+    updater = _mock_webhook_app(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "https://example.com/telegram")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_HOST", "0.0.0.0")
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert updater.start_webhook.await_args.kwargs["listen"] == "0.0.0.0"
+    await adapter.disconnect()
+
+
 @pytest.mark.asyncio
 async def test_connect_rejects_same_host_token_lock(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))

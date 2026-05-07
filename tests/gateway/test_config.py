@@ -25,6 +25,22 @@ class TestHomeChannelRoundtrip:
         assert restored.name == "general"
 
 
+class TestEnvOverrides:
+    def test_webhook_host_env_override_is_preserved(self):
+        config = GatewayConfig()
+        env = {
+            "WEBHOOK_ENABLED": "true",
+            "WEBHOOK_HOST": "0.0.0.0",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            _apply_env_overrides(config)
+
+        webhook = config.platforms[Platform.WEBHOOK]
+        assert webhook.enabled is True
+        assert webhook.extra["host"] == "0.0.0.0"
+
+
 class TestPlatformConfigRoundtrip:
     def test_to_dict_from_dict(self):
         pc = PlatformConfig(

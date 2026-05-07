@@ -43,7 +43,10 @@ import re
 import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
-from firecrawl import Firecrawl
+try:
+    from firecrawl import Firecrawl
+except ImportError:
+    Firecrawl = None
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
 from tools.url_safety import is_safe_url
@@ -104,6 +107,10 @@ def _get_firecrawl_client():
     """
     global _firecrawl_client
     if _firecrawl_client is None:
+        if Firecrawl is None:
+            raise ImportError(
+                "Firecrawl package is not installed. Install the firecrawl extra or select another web backend."
+            )
         api_key = os.getenv("FIRECRAWL_API_KEY")
         api_url = os.getenv("FIRECRAWL_API_URL")
         if not api_key and not api_url:

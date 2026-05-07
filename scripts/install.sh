@@ -6,10 +6,12 @@
 # Uses uv for fast Python provisioning and package management.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   git clone https://github.com/NousResearch/hermes-agent.git
+#   cd hermes-agent
+#   bash scripts/install.sh --safe
 #
 # Or with options:
-#   curl -fsSL ... | bash -s -- --no-venv --skip-setup
+#   bash scripts/install.sh --no-venv --skip-setup
 #
 # ============================================================================
 
@@ -36,9 +38,10 @@ NODE_VERSION="22"
 # Options
 USE_VENV=true
 RUN_SETUP=true
+SAFE_MODE=${HERMES_INSTALL_SAFE:-false}
 BRANCH="main"
 
-# Detect non-interactive mode (e.g. curl | bash)
+# Detect non-interactive mode.
 # When stdin is not a terminal, read -p will fail with EOF,
 # causing set -e to silently abort the entire script.
 if [ -t 0 ]; then
@@ -58,6 +61,11 @@ while [[ $# -gt 0 ]]; do
             RUN_SETUP=false
             shift
             ;;
+        --safe)
+            SAFE_MODE=true
+            RUN_SETUP=false
+            shift
+            ;;
         --branch)
             BRANCH="$2"
             shift 2
@@ -74,6 +82,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
+            echo "  --safe         Conservative mode: skip optional network/system installs, shell rc edits, and gateway startup"
             echo "  --branch NAME  Git branch to install (default: main)"
             echo "  --dir PATH     Installation directory (default: ~/.hermes/hermes-agent)"
             echo "  -h, --help     Show this help"
@@ -186,7 +195,10 @@ install_uv() {
 
     # Install uv
     log_info "Installing uv (fast Python package manager)..."
-    if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+    local uv_installer
+    uv_installer=$(mktemp)
+    if curl --proto '=https' --tlsv1.2 -fsSL https://astral.sh/uv/install.sh -o "$uv_installer" && sh "$uv_installer" 2>/dev/null; then
+        rm -f "$uv_installer"
         # uv installs to ~/.local/bin by default
         if [ -x "$HOME/.local/bin/uv" ]; then
             UV_CMD="$HOME/.local/bin/uv"
@@ -202,6 +214,7 @@ install_uv() {
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         log_success "uv installed ($UV_VERSION)"
     else
+        rm -f "$uv_installer"
         log_error "Failed to install uv"
         log_info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         exit 1
@@ -287,6 +300,12 @@ check_node() {
         local found_ver=$("$HERMES_HOME/node/bin/node" --version)
         log_success "Node.js $found_ver found (Hermes-managed)"
         HAS_NODE=true
+        return 0
+    fi
+
+    if [ "$SAFE_MODE" = true ]; then
+        log_warn "Node.js not found; safe mode skips Node.js auto-install. Browser tools may be limited."
+        HAS_NODE=false
         return 0
     fi
 
@@ -390,6 +409,13 @@ install_node() {
 }
 
 install_system_packages() {
+    if [ "$SAFE_MODE" = true ]; then
+        log_info "Safe mode: skipping optional system package installation."
+        HAS_RIPGREP=false
+        HAS_FFMPEG=false
+        return 0
+    fi
+
     # Detect what's missing
     HAS_RIPGREP=false
     HAS_FFMPEG=false
@@ -495,7 +521,7 @@ install_system_packages() {
                     fi
                 fi
             elif [ -e /dev/tty ]; then
-                # Non-interactive (e.g. curl | bash) but a terminal is available.
+                # Non-interactive invocation but a terminal is available.
                 # Read the prompt from /dev/tty (same approach the setup wizard uses).
                 echo ""
                 log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
@@ -669,7 +695,9 @@ install_deps() {
 
     # On Debian/Ubuntu (including WSL), some Python packages need build tools.
     # Check and offer to install them if missing.
-    if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
+    if [ "$SAFE_MODE" = true ]; then
+        log_info "Safe mode: skipping build tool package-manager install."
+    elif [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
         local need_build_tools=false
         for pkg in gcc python3-dev libffi-dev; do
             if ! dpkg -s "$pkg" &>/dev/null; then
@@ -755,7 +783,10 @@ setup_path() {
     # Check if ~/.local/bin is on PATH; if not, add it to shell config.
     # Detect the user's actual login shell (not the shell running this script,
     # which is always bash when piped from curl).
-    if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
+    if [ "$SAFE_MODE" = true ]; then
+        log_info "Safe mode: not editing shell config files."
+        log_info 'Add manually if needed: export PATH="$HOME/.local/bin:$PATH"'
+    elif ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
         SHELL_CONFIGS=()
         LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
         case "$LOGIN_SHELL" in
@@ -873,6 +904,11 @@ SOUL_EOF
 }
 
 install_node_deps() {
+    if [ "$SAFE_MODE" = true ]; then
+        log_info "Safe mode: skipping npm and Playwright installs."
+        return 0
+    fi
+
     if [ "$HAS_NODE" = false ]; then
         log_info "Skipping Node.js dependencies (Node not installed)"
         return 0
@@ -934,7 +970,7 @@ run_setup_wizard() {
     fi
 
     # The setup wizard reads from /dev/tty, so it works even when the
-    # install script itself is piped (curl | bash). Only skip if no
+    # install script runs without stdin. Only skip if no
     # terminal is available at all (e.g. Docker build, CI).
     if ! [ -e /dev/tty ]; then
         log_info "Setup wizard skipped (no terminal available). Run 'hermes setup' after install."
@@ -957,6 +993,11 @@ run_setup_wizard() {
 }
 
 maybe_start_gateway() {
+    if [ "$SAFE_MODE" = true ]; then
+        log_info "Safe mode: skipping gateway service offer/start."
+        return 0
+    fi
+
     # Check if any messaging platform tokens were configured
     ENV_FILE="$HERMES_HOME/.env"
     if [ ! -f "$ENV_FILE" ]; then

@@ -30,10 +30,12 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 ## Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+bash scripts/install.sh --safe
 ```
 
-Works on Linux, macOS, and WSL2. The installer handles everything — Python, Node.js, dependencies, and the `hermes` command. No prerequisites except git.
+Safe mode works on Linux, macOS, and WSL2. It installs Hermes but skips optional system/package-manager actions such as Node.js, Playwright, sudo package installs, shell rc edits, and gateway startup. For a fully automated install with browser and messaging extras, run `bash scripts/install.sh` from a local checkout.
 
 > **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
 

@@ -43,7 +43,7 @@ def _make_config(
     secret="",
     rate_limit=30,
     max_body_bytes=1_048_576,
-    host="0.0.0.0",
+    host="127.0.0.1",
     port=0,  # let OS pick a free port in tests
 ):
     """Build a PlatformConfig suitable for WebhookAdapter."""
@@ -98,6 +98,22 @@ def _github_signature(body: bytes, secret: str) -> str:
 def _generic_signature(body: bytes, secret: str) -> str:
     """Compute X-Webhook-Signature (plain HMAC-SHA256 hex) for *body*."""
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+# ===================================================================
+# Bind host configuration
+# ===================================================================
+
+
+class TestWebhookBindHost:
+    def test_default_host_is_localhost(self):
+        config = PlatformConfig(enabled=True, extra={})
+        adapter = WebhookAdapter(config)
+        assert adapter._host == "127.0.0.1"
+
+    def test_explicit_host_override_is_preserved(self):
+        adapter = _make_adapter(host="0.0.0.0")
+        assert adapter._host == "0.0.0.0"
 
 
 # ===================================================================

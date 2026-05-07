@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Collaboration project-management state (read-only)
+    "collaboration",
     # Honcho memory tools (gated on honcho being active via check_fn)
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -135,7 +137,13 @@ TOOLSETS = {
         "tools": ["send_message"],
         "includes": []
     },
-    
+
+    "collaboration": {
+        "description": "Read-only collaboration.ktl.com project-management state",
+        "tools": ["collaboration"],
+        "includes": []
+    },
+
     "rl": {
         "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
         "tools": [

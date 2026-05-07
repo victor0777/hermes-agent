@@ -58,3 +58,6 @@ mini-swe-agent/
 # Nix
 .direnv/
 result
+
+# mem0 local knowledge index
+.mem0/

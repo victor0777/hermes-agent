@@ -3401,6 +3401,43 @@ class HermesCLI:
             print("  Usage: /personality <name>")
             print()
     
+    def _handle_collab_command(self, cmd: str):
+        """Handle read-only collaboration PM commands."""
+        from tools.collaboration_tool import collaboration_tool
+
+        parts = cmd.split()
+        subcommand = parts[1].lower() if len(parts) > 1 else "brief"
+        project = parts[2] if len(parts) > 2 and subcommand == "project" else ""
+        action_map = {
+            "brief": "brief",
+            "dashboard": "dashboard",
+            "requests": "list_requests",
+            "overdue": "overdue_requests",
+            "blockers": "blockers",
+            "reports": "reports",
+            "project": "project_summary",
+        }
+        action = action_map.get(subcommand)
+        if not action:
+            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>]")
+            return
+        if subcommand == "project" and not project:
+            _cprint("  Usage: /collab project <name>")
+            return
+
+        result = json.loads(collaboration_tool(
+            action=action,
+            project=project,
+            status="open" if action == "list_requests" else "",
+        ))
+        if action == "brief":
+            _cprint(result.get("text") or result.get("error") or json.dumps(result, ensure_ascii=False, indent=2))
+            return
+        if not result.get("success"):
+            _cprint(f"  Collaboration request failed: {result.get('error', 'unknown error')}")
+            return
+        _cprint(json.dumps(result.get("data"), ensure_ascii=False, indent=2))
+
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         import shlex
@@ -3881,6 +3918,8 @@ class HermesCLI:
             self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
+        elif canonical == "collab":
+            self._handle_collab_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)

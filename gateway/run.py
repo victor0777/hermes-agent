@@ -78,6 +78,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write
+from tools.approval import detect_dangerous_command
+from tools.environments.local import _sanitize_subprocess_env
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -1973,6 +1975,12 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "collab":
+            from hermes_cli.commands import _is_gateway_available
+            if _cmd_def and not _is_gateway_available(_cmd_def):
+                return "The /collab command is disabled for this gateway. Set collaboration.gateway_brief_enabled=true to enable it."
+            return await self._handle_collab_command(event)
+
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
             if isinstance(self.config, dict):
@@ -1986,16 +1994,29 @@ class GatewayRunner:
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        is_dangerous, _, reason = detect_dangerous_command(exec_cmd)
+                        if is_dangerous:
+                            return f"Quick command rejected: dangerous command detected ({reason})."
+
+                        proc = None
                         try:
                             proc = await asyncio.create_subprocess_shell(
                                 exec_cmd,
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.PIPE,
+                                env=_sanitize_subprocess_env(os.environ),
                             )
                             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
                             output = (stdout or stderr).decode().strip()
                             return output if output else "Command returned no output."
                         except asyncio.TimeoutError:
+                            if proc and proc.returncode is None:
+                                proc.terminate()
+                                try:
+                                    await asyncio.wait_for(proc.wait(), timeout=2)
+                                except asyncio.TimeoutError:
+                                    proc.kill()
+                                    await proc.wait()
                             return "Quick command timed out (30s)."
                         except Exception as e:
                             return f"Quick command error: {e}"
@@ -3434,6 +3455,39 @@ class GatewayRunner:
         if hasattr(raw, "guild") and raw.guild:
             return raw.guild.id
         return None
+
+    async def _handle_collab_command(self, event: MessageEvent) -> str:
+        """Handle read-only collaboration PM commands."""
+        from tools.collaboration_tool import collaboration_tool
+
+        parts = event.get_command_args().strip().split()
+        subcommand = parts[0].lower() if parts else "brief"
+        project = parts[1] if len(parts) > 1 and subcommand == "project" else ""
+        action_map = {
+            "brief": "brief",
+            "dashboard": "dashboard",
+            "requests": "list_requests",
+            "overdue": "overdue_requests",
+            "blockers": "blockers",
+            "reports": "reports",
+            "project": "project_summary",
+        }
+        action = action_map.get(subcommand)
+        if not action:
+            return "Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>]"
+        if subcommand == "project" and not project:
+            return "Usage: /collab project <name>"
+
+        result = json.loads(collaboration_tool(
+            action=action,
+            project=project,
+            status="open" if action == "list_requests" else "",
+        ))
+        if action == "brief":
+            return result.get("text") or result.get("error") or json.dumps(result, ensure_ascii=False, indent=2)
+        if not result.get("success"):
+            return f"Collaboration request failed: {result.get('error', 'unknown error')}"
+        return json.dumps(result.get("data"), ensure_ascii=False, indent=2)
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""

@@ -470,6 +470,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             TELEGRAM_WEBHOOK_URL    Public HTTPS URL (e.g. https://app.fly.dev/telegram)
             TELEGRAM_WEBHOOK_PORT   Local listen port (default 8443)
+            TELEGRAM_WEBHOOK_HOST   Local bind host (default 127.0.0.1)
             TELEGRAM_WEBHOOK_SECRET Secret token for update verification
         """
         if not TELEGRAM_AVAILABLE:
@@ -575,12 +576,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 # enables cloud platforms (Fly.io, Railway) to auto-wake
                 # suspended machines on inbound HTTP traffic.
                 webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
+                webhook_host = os.getenv("TELEGRAM_WEBHOOK_HOST", "127.0.0.1").strip() or "127.0.0.1"
                 webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip() or None
                 from urllib.parse import urlparse
                 webhook_path = urlparse(webhook_url).path or "/telegram"
 
+                if webhook_host == "0.0.0.0":
+                    logger.warning(
+                        "[%s] Listening on 0.0.0.0 exposes the Telegram webhook server to the network. Use only behind trusted auth/proxy controls.",
+                        self.name,
+                    )
+
                 await self._app.updater.start_webhook(
-                    listen="0.0.0.0",
+                    listen=webhook_host,
                     port=webhook_port,
                     url_path=webhook_path,
                     webhook_url=webhook_url,
@@ -590,8 +598,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 self._webhook_mode = True
                 logger.info(
-                    "[%s] Webhook server listening on 0.0.0.0:%d%s",
-                    self.name, webhook_port, webhook_path,
+                    "[%s] Webhook server listening on %s:%d%s",
+                    self.name, webhook_host, webhook_port, webhook_path,
                 )
             else:
                 # ── Polling mode (default) ───────────────────────────

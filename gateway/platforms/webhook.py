@@ -51,7 +51,7 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
@@ -113,6 +113,9 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"Set 'secret' on the route or globally. "
                     f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
                 )
+
+        if self._host == "0.0.0.0":
+            logger.warning("[webhook] Listening on 0.0.0.0 exposes the webhook server to the network. Use only behind trusted auth/proxy controls.")
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)

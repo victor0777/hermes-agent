@@ -4,8 +4,14 @@ Covers config loading, format/truncate, echo prevention,
 requirements check, and toolset verification.
 """
 
+import asyncio
+import base64
+import hashlib
+import hmac
 import os
-from unittest.mock import patch
+import urllib.parse
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -123,6 +129,35 @@ class TestSmsFormatAndTruncate:
 
 # ── Echo prevention ────────────────────────────────────────────────
 
+class TestSmsBindHost:
+    def test_default_webhook_host_is_localhost(self):
+        from gateway.platforms.sms import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+            assert adapter._webhook_host == "127.0.0.1"
+
+    def test_webhook_host_env_override_is_preserved(self):
+        from gateway.platforms.sms import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+            "SMS_WEBHOOK_HOST": "0.0.0.0",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+            assert adapter._webhook_host == "0.0.0.0"
+
+
 class TestSmsEchoPrevention:
     """Adapter should ignore messages from its own number."""
 
@@ -139,6 +174,121 @@ class TestSmsEchoPrevention:
             pc = PlatformConfig(enabled=True, api_key="tok")
             adapter = SmsAdapter(pc)
             assert adapter._from_number == "+15550001111"
+
+
+# ── Webhook authenticity ───────────────────────────────────────────
+
+class TestSmsWebhookAuthenticity:
+    def _make_adapter(self, monkeypatch, extra_env=None):
+        from gateway.platforms.sms import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+            "SMS_WEBHOOK_PUBLIC_URL": "https://sms.example.com/webhooks/twilio",
+        }
+        if extra_env:
+            env.update(extra_env)
+        monkeypatch.setattr(os, "environ", env)
+        adapter = SmsAdapter(PlatformConfig(enabled=True, api_key="tok"))
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    def _signature(self, url, params, token="tok"):
+        parts = [url]
+        for key in sorted(params):
+            parts.append(key)
+            parts.append(params[key])
+        digest = hmac.new(token.encode("utf-8"), "".join(parts).encode("utf-8"), hashlib.sha1).digest()
+        return base64.b64encode(digest).decode("ascii")
+
+    def _request(self, params, signature=""):
+        body = urllib.parse.urlencode(params).encode("utf-8")
+        return SimpleNamespace(
+            read=AsyncMock(return_value=body),
+            headers={"X-Twilio-Signature": signature} if signature else {},
+            url="http://127.0.0.1:8080/webhooks/twilio",
+        )
+
+    @pytest.mark.asyncio
+    async def test_valid_signature_accepts_webhook(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        params = {
+            "From": "+15551234567",
+            "To": "+15550001111",
+            "Body": "hello",
+            "MessageSid": "SM123",
+        }
+        signature = self._signature("https://sms.example.com/webhooks/twilio", params)
+
+        response = await adapter._handle_webhook(self._request(params, signature))
+
+        assert response.status == 200
+        await asyncio.sleep(0)
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_signature_rejects_webhook(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        params = {
+            "From": "+15551234567",
+            "To": "+15550001111",
+            "Body": "hello",
+            "MessageSid": "SM123",
+        }
+
+        response = await adapter._handle_webhook(self._request(params))
+
+        assert response.status == 403
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_invalid_signature_rejects_webhook(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        params = {
+            "From": "+15551234567",
+            "To": "+15550001111",
+            "Body": "hello",
+            "MessageSid": "SM123",
+        }
+
+        response = await adapter._handle_webhook(self._request(params, "bad-signature"))
+
+        assert response.status == 403
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_insecure_no_auth_bypasses_signature_only_when_set(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch, {"SMS_INSECURE_NO_AUTH": "true"})
+        params = {
+            "From": "+15551234567",
+            "To": "+15550001111",
+            "Body": "hello",
+            "MessageSid": "SM123",
+        }
+
+        response = await adapter._handle_webhook(self._request(params))
+
+        assert response.status == 200
+        await asyncio.sleep(0)
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_oversized_payload_rejected(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch, {"SMS_MAX_WEBHOOK_BYTES": "10"})
+        params = {
+            "From": "+15551234567",
+            "To": "+15550001111",
+            "Body": "hello",
+            "MessageSid": "SM123",
+        }
+        signature = self._signature("https://sms.example.com/webhooks/twilio", params)
+
+        response = await adapter._handle_webhook(self._request(params, signature))
+
+        assert response.status == 413
+        adapter.handle_message.assert_not_awaited()
 
 
 # ── Requirements check ─────────────────────────────────────────────

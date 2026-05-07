@@ -30,6 +30,37 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PYTHON_VERSION="3.11"
+SAFE_MODE=${HERMES_INSTALL_SAFE:-false}
+RUN_SETUP=true
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --safe)
+            SAFE_MODE=true
+            RUN_SETUP=false
+            shift
+            ;;
+        --skip-setup)
+            RUN_SETUP=false
+            shift
+            ;;
+        -h|--help)
+            echo "Hermes Agent Setup"
+            echo ""
+            echo "Usage: setup-hermes.sh [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --safe         Conservative mode: skip optional package-manager installs, shell rc edits, and setup wizard"
+            echo "  --skip-setup   Skip setup wizard"
+            echo "  -h, --help     Show this help"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
 
 echo ""
 echo -e "${CYAN}⚕ Hermes Agent Setup${NC}"
@@ -55,7 +86,9 @@ if [ -n "$UV_CMD" ]; then
     echo -e "${GREEN}✓${NC} uv found ($UV_VERSION)"
 else
     echo -e "${CYAN}→${NC} Installing uv..."
-    if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+    UV_INSTALLER=$(mktemp)
+    if curl --proto '=https' --tlsv1.2 -fsSL https://astral.sh/uv/install.sh -o "$UV_INSTALLER" && sh "$UV_INSTALLER" 2>/dev/null; then
+        rm -f "$UV_INSTALLER"
         if [ -x "$HOME/.local/bin/uv" ]; then
             UV_CMD="$HOME/.local/bin/uv"
         elif [ -x "$HOME/.cargo/bin/uv" ]; then
@@ -70,6 +103,7 @@ else
             exit 1
         fi
     else
+        rm -f "$UV_INSTALLER"
         echo -e "${RED}✗${NC} Failed to install uv. Visit https://docs.astral.sh/uv/"
         exit 1
     fi
@@ -154,6 +188,8 @@ echo -e "${CYAN}→${NC} Checking ripgrep (optional, for faster search)..."
 
 if command -v rg &> /dev/null; then
     echo -e "${GREEN}✓${NC} ripgrep found"
+elif [ "$SAFE_MODE" = true ]; then
+    echo -e "${YELLOW}⚠${NC} ripgrep not found; safe mode skips package-manager auto-install"
 else
     echo -e "${YELLOW}⚠${NC} ripgrep not found (file search will use grep fallback)"
     read -p "Install ripgrep for faster search? [Y/n] " -n 1 -r
@@ -235,10 +271,13 @@ else
     fi
 fi
 
-if [ -n "$SHELL_CONFIG" ]; then
+if [ "$SAFE_MODE" = true ]; then
+    echo -e "${CYAN}→${NC} Safe mode: not editing shell config files."
+    echo 'Add manually if needed: export PATH="$HOME/.local/bin:$PATH"'
+elif [ -n "$SHELL_CONFIG" ]; then
     # Touch the file just in case it doesn't exist yet but was selected
     touch "$SHELL_CONFIG" 2>/dev/null || true
-    
+
     if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
         if ! grep -q '\.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
             echo "" >> "$SHELL_CONFIG"
@@ -281,8 +320,12 @@ echo -e "${GREEN}✓ Setup complete!${NC}"
 echo ""
 echo "Next steps:"
 echo ""
-echo "  1. Reload your shell:"
-echo "     source $SHELL_CONFIG"
+echo "  1. Ensure ~/.local/bin is on PATH:"
+if [ "$SAFE_MODE" = true ] || [ -z "$SHELL_CONFIG" ]; then
+    echo '     export PATH="$HOME/.local/bin:$PATH"'
+else
+    echo "     source $SHELL_CONFIG"
+fi
 echo ""
 echo "  2. Run the setup wizard to configure API keys:"
 echo "     hermes setup"
@@ -298,10 +341,14 @@ echo "  hermes doctor        # Diagnose issues"
 echo ""
 
 # Ask if they want to run setup wizard now
-read -p "Would you like to run the setup wizard now? [Y/n] " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-    echo ""
-    # Run directly with venv Python (no activation needed)
-    "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup
+if [ "$RUN_SETUP" = true ]; then
+    read -p "Would you like to run the setup wizard now? [Y/n] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        echo ""
+        # Run directly with venv Python (no activation needed)
+        "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup
+    fi
+else
+    echo -e "${CYAN}→${NC} Setup wizard skipped. Run 'hermes setup' after setup."
 fi

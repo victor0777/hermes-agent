@@ -9,14 +9,20 @@ Shares credentials with the optional telephony skill — same env vars:
   - TWILIO_PHONE_NUMBER  (E.164 from-number, e.g. +15551234567)
 
 Gateway-specific env vars:
-  - SMS_WEBHOOK_PORT     (default 8080)
-  - SMS_ALLOWED_USERS    (comma-separated E.164 phone numbers)
-  - SMS_ALLOW_ALL_USERS  (true/false)
-  - SMS_HOME_CHANNEL     (phone number for cron delivery)
+  - SMS_WEBHOOK_HOST       (default 127.0.0.1)
+  - SMS_WEBHOOK_PORT       (default 8080)
+  - SMS_WEBHOOK_PUBLIC_URL (external URL used for Twilio signature validation)
+  - SMS_INSECURE_NO_AUTH   (true to bypass signature validation for local tests only)
+  - SMS_MAX_WEBHOOK_BYTES  (default 65536)
+  - SMS_ALLOWED_USERS      (comma-separated E.164 phone numbers)
+  - SMS_ALLOW_ALL_USERS    (true/false)
+  - SMS_HOME_CHANNEL       (phone number for cron delivery)
 """
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -36,6 +42,8 @@ logger = logging.getLogger(__name__)
 TWILIO_API_BASE = "https://api.twilio.com/2010-04-01/Accounts"
 MAX_SMS_LENGTH = 1600  # ~10 SMS segments
 DEFAULT_WEBHOOK_PORT = 8080
+DEFAULT_WEBHOOK_HOST = "127.0.0.1"
+DEFAULT_MAX_WEBHOOK_BYTES = 65_536
 
 # E.164 phone number pattern for redaction
 _PHONE_RE = re.compile(r"\+[1-9]\d{6,14}")
@@ -77,6 +85,10 @@ class SmsAdapter(BasePlatformAdapter):
         self._webhook_port: int = int(
             os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
         )
+        self._webhook_host: str = os.getenv("SMS_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST).strip() or DEFAULT_WEBHOOK_HOST
+        self._webhook_public_url: str = os.getenv("SMS_WEBHOOK_PUBLIC_URL", "").strip()
+        self._insecure_no_auth: bool = os.getenv("SMS_INSECURE_NO_AUTH", "").lower() in ("true", "1", "yes")
+        self._max_webhook_bytes: int = int(os.getenv("SMS_MAX_WEBHOOK_BYTES", str(DEFAULT_MAX_WEBHOOK_BYTES)))
         self._runner = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
 
@@ -102,9 +114,14 @@ class SmsAdapter(BasePlatformAdapter):
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
 
+        if self._webhook_host == "0.0.0.0":
+            logger.warning("[sms] Listening on 0.0.0.0 exposes the Twilio webhook server to the network. Use only behind trusted auth/proxy controls.")
+        if self._insecure_no_auth:
+            logger.warning("[sms] SMS_INSECURE_NO_AUTH=true disables Twilio webhook signature validation. Use only for local testing.")
+
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, "0.0.0.0", self._webhook_port)
+        site = web.TCPSite(self._runner, self._webhook_host, self._webhook_port)
         await site.start()
         self._http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
@@ -112,7 +129,8 @@ class SmsAdapter(BasePlatformAdapter):
         self._running = True
 
         logger.info(
-            "[sms] Twilio webhook server listening on port %d, from: %s",
+            "[sms] Twilio webhook server listening on %s:%d, from: %s",
+            self._webhook_host,
             self._webhook_port,
             _redact_phone(self._from_number),
         )
@@ -207,12 +225,35 @@ class SmsAdapter(BasePlatformAdapter):
     # Twilio webhook handler
     # ------------------------------------------------------------------
 
+    def _webhook_validation_url(self, request) -> str:
+        if self._webhook_public_url:
+            return self._webhook_public_url
+        return str(request.url)
+
+    def _valid_twilio_signature(self, url: str, form: Dict[str, list[str]], signature: str) -> bool:
+        if not signature:
+            return False
+        parts = [url]
+        for key in sorted(form):
+            for value in form[key]:
+                parts.append(key)
+                parts.append(value)
+        payload = "".join(parts).encode("utf-8")
+        digest = hmac.new(self._auth_token.encode("utf-8"), payload, hashlib.sha1).digest()
+        expected = base64.b64encode(digest).decode("ascii")
+        return hmac.compare_digest(expected, signature)
+
     async def _handle_webhook(self, request) -> "aiohttp.web.Response":
         from aiohttp import web
 
         try:
             raw = await request.read()
-            # Twilio sends form-encoded data, not JSON
+            if len(raw) > self._max_webhook_bytes:
+                return web.Response(
+                    text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                    content_type="application/xml",
+                    status=413,
+                )
             form = urllib.parse.parse_qs(raw.decode("utf-8"))
         except Exception as e:
             logger.error("[sms] webhook parse error: %s", e)
@@ -221,6 +262,16 @@ class SmsAdapter(BasePlatformAdapter):
                 content_type="application/xml",
                 status=400,
             )
+
+        if not self._insecure_no_auth:
+            signature = request.headers.get("X-Twilio-Signature", "")
+            if not self._valid_twilio_signature(self._webhook_validation_url(request), form, signature):
+                logger.warning("[sms] rejected webhook with invalid Twilio signature")
+                return web.Response(
+                    text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                    content_type="application/xml",
+                    status=403,
+                )
 
         # Extract fields (parse_qs returns lists)
         from_number = (form.get("From", [""]))[0].strip()
