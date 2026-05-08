@@ -36,6 +36,12 @@ class TestResolveToolset:
         assert "web_search" in tools
         assert "web_extract" in tools
 
+    def test_collaboration_toolset_includes_search_tools(self):
+        tools = resolve_toolset("collaboration")
+        assert "collaboration" in tools
+        assert "collaboration_search_knowledge" in tools
+        assert "collaboration_board_search" in tools
+
     def test_cycle_detection(self):
         # Create a cycle: A includes B, B includes A
         TOOLSETS["_cycle_a"] = {"description": "test", "tools": ["t1"], "includes": ["_cycle_b"]}

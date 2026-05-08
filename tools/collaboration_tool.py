@@ -47,7 +47,11 @@ def _collaboration_config() -> Dict[str, Any]:
 
 def _base_url() -> str:
     config = _collaboration_config()
-    base_url = os.getenv("COLLABORATION_BASE_URL") or config.get("base_url", DEFAULT_BASE_URL)
+    base_url = (
+        os.getenv("COLLABORATION_API_BASE")
+        or os.getenv("COLLABORATION_BASE_URL")
+        or config.get("base_url", DEFAULT_BASE_URL)
+    )
     return str(base_url).rstrip("/")
 
 
@@ -96,6 +100,80 @@ def _items(data: Any) -> List[Any]:
             if isinstance(value, list):
                 return value
     return []
+
+
+def _search_error(message: str, **extra: Any) -> Dict[str, Any]:
+    result = {
+        "success": False,
+        "error": message,
+        "items": [],
+        "results": [],
+        "count": 0,
+    }
+    result.update(extra)
+    return result
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _search_lists(data: Any) -> tuple[List[Any], List[Any], int]:
+    if isinstance(data, list):
+        return data, data, len(data)
+    if not isinstance(data, dict):
+        return [], [], 0
+
+    results = data.get("results") if isinstance(data.get("results"), list) else []
+    items = data.get("items") if isinstance(data.get("items"), list) else []
+    nested_data = data.get("data")
+    if not results and isinstance(nested_data, list):
+        results = nested_data
+    if not items and isinstance(nested_data, list):
+        items = nested_data
+    count = data.get("count")
+    if not isinstance(count, int):
+        count = len(results or items)
+    return results, items, count
+
+
+def _search_result(action: str, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        result = _request_json(path, params)
+    except requests.RequestException as exc:
+        query = urlencode(_clean_params(params))
+        url = f"{_base_url()}{path}" + (f"?{query}" if query else "")
+        return _search_error(f"Collaboration API request failed: {exc}", action=action, url=url)
+
+    if "data" not in result:
+        return _search_error(
+            "Collaboration API returned invalid JSON",
+            action=action,
+            url=result.get("url"),
+            status_code=result.get("status_code"),
+        )
+
+    if not result.get("success"):
+        results, items, count = _search_lists(result.get("data"))
+        return {
+            **result,
+            "action": action,
+            "results": results,
+            "items": items,
+            "count": count,
+        }
+
+    results, items, count = _search_lists(result["data"])
+    return {
+        **result,
+        "action": action,
+        "results": results,
+        "items": items,
+        "count": count,
+    }
 
 
 def _title(item: Any) -> str:
@@ -269,8 +347,136 @@ def collaboration_tool(
         )
 
 
+def collaboration_search_knowledge(
+    query: str,
+    project: str = "",
+    mode: str = "auto",
+    limit: int = 10,
+) -> str:
+    query = (query or "").strip()
+    if not query:
+        return json.dumps(_search_error("query is required", action="search_knowledge"), ensure_ascii=False)
+
+    result = _search_result(
+        "search_knowledge",
+        "/api/v1/search/knowledge",
+        {
+            "query": query,
+            "project": project,
+            "mode": mode or "auto",
+            "limit": _as_int(limit, 10),
+        },
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
+def collaboration_board_search(
+    q: str,
+    project: str = "",
+    kind: str = "",
+    status: str = "",
+    category: str = "",
+    limit: int = 20,
+) -> str:
+    q = (q or "").strip()
+    if not q:
+        return json.dumps(_search_error("q is required", action="board_search"), ensure_ascii=False)
+
+    result = _search_result(
+        "board_search",
+        "/api/v1/board/search",
+        {
+            "q": q,
+            "project": project,
+            "kind": kind,
+            "status": status,
+            "category": category,
+            "limit": _as_int(limit, 20),
+        },
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
 def check_collaboration_requirements() -> bool:
     return True
+
+
+COLLABORATION_SEARCH_KNOWLEDGE_SCHEMA = {
+    "name": "collaboration_search_knowledge",
+    "description": (
+        "Read-only search of collaboration knowledge and project-doc snapshots. "
+        "This tool cannot create, update, or delete shared state."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query for collaboration knowledge and project snapshots.",
+            },
+            "project": {
+                "type": "string",
+                "description": "Optional project filter such as hermes-agent or OpenViking.",
+                "default": "",
+            },
+            "mode": {
+                "type": "string",
+                "description": "Search mode: auto, keyword, semantic, or hybrid.",
+                "default": "auto",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return.",
+                "default": 10,
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
+COLLABORATION_BOARD_SEARCH_SCHEMA = {
+    "name": "collaboration_board_search",
+    "description": (
+        "Read-only search of collaboration Agent Board requests, notices, replies, and artifacts. "
+        "This tool cannot create, update, or delete shared state."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "q": {
+                "type": "string",
+                "description": "Search query for Agent Board entries.",
+            },
+            "project": {
+                "type": "string",
+                "description": "Optional project filter.",
+                "default": "",
+            },
+            "kind": {
+                "type": "string",
+                "description": "Optional board entry kind filter.",
+                "default": "",
+            },
+            "status": {
+                "type": "string",
+                "description": "Optional status filter such as open or closed.",
+                "default": "",
+            },
+            "category": {
+                "type": "string",
+                "description": "Optional category filter such as board_entry.",
+                "default": "",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of items to return.",
+                "default": 20,
+            },
+        },
+        "required": ["q"],
+    },
+}
 
 
 COLLABORATION_SCHEMA = {
@@ -340,4 +546,34 @@ registry.register(
     ),
     check_fn=check_collaboration_requirements,
     description=COLLABORATION_SCHEMA["description"],
+)
+
+registry.register(
+    name="collaboration_search_knowledge",
+    toolset="collaboration",
+    schema=COLLABORATION_SEARCH_KNOWLEDGE_SCHEMA,
+    handler=lambda args, **kw: collaboration_search_knowledge(
+        query=args.get("query", ""),
+        project=args.get("project", ""),
+        mode=args.get("mode", "auto"),
+        limit=args.get("limit", 10),
+    ),
+    check_fn=check_collaboration_requirements,
+    description=COLLABORATION_SEARCH_KNOWLEDGE_SCHEMA["description"],
+)
+
+registry.register(
+    name="collaboration_board_search",
+    toolset="collaboration",
+    schema=COLLABORATION_BOARD_SEARCH_SCHEMA,
+    handler=lambda args, **kw: collaboration_board_search(
+        q=args.get("q", ""),
+        project=args.get("project", ""),
+        kind=args.get("kind", ""),
+        status=args.get("status", ""),
+        category=args.get("category", ""),
+        limit=args.get("limit", 20),
+    ),
+    check_fn=check_collaboration_requirements,
+    description=COLLABORATION_BOARD_SEARCH_SCHEMA["description"],
 )

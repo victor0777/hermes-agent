@@ -1,9 +1,14 @@
 import json
 from unittest.mock import Mock
+from urllib.parse import urlencode
 
 import requests
 
-from tools.collaboration_tool import collaboration_tool
+from tools.collaboration_tool import (
+    collaboration_board_search,
+    collaboration_search_knowledge,
+    collaboration_tool,
+)
 
 
 class TestCollaborationTool:
@@ -136,3 +141,116 @@ class TestCollaborationTool:
         assert result["success"] is True
         assert "Dashboard blocker" in result["text"]
         assert "using dashboard blockers fallback" in result["text"]
+
+    def test_search_knowledge_uses_api_base_and_preserves_snapshot_results(self, monkeypatch):
+        monkeypatch.setenv("COLLABORATION_API_BASE", "http://api.example.test")
+        monkeypatch.setenv("COLLABORATION_BASE_URL", "http://old.example.test")
+        snapshot = {"id": "project-snapshot:OpenViking/README.md::0", "text": "context database"}
+
+        def fake_get(url, **kwargs):
+            response = Mock()
+            response.ok = True
+            response.status_code = 200
+            response.url = f"{url}?{urlencode(kwargs['params'])}"
+            response.json.return_value = {"results": [snapshot], "count": 1}
+            return response
+
+        mocked_get = Mock(side_effect=fake_get)
+        monkeypatch.setattr("tools.collaboration_tool.requests.get", mocked_get)
+
+        result = json.loads(collaboration_search_knowledge(
+            query="OpenViking context database",
+            project="OpenViking/a/b",
+            limit=3,
+        ))
+
+        assert result["success"] is True
+        assert result["results"] == [snapshot]
+        assert result["data"]["results"] == [snapshot]
+        assert result["count"] == 1
+        assert mocked_get.call_args.args[0] == "http://api.example.test/api/v1/search/knowledge"
+        assert "query=OpenViking+context+database" in result["url"]
+        assert "project=OpenViking%2Fa%2Fb" in result["url"]
+
+    def test_search_knowledge_falls_back_to_legacy_base_url(self, monkeypatch):
+        monkeypatch.delenv("COLLABORATION_API_BASE", raising=False)
+        monkeypatch.setenv("COLLABORATION_BASE_URL", "http://legacy.example.test")
+        response = Mock()
+        response.ok = True
+        response.status_code = 200
+        response.url = "http://legacy.example.test/api/v1/search/knowledge?query=hermes"
+        response.json.return_value = []
+        mocked_get = Mock(return_value=response)
+        monkeypatch.setattr("tools.collaboration_tool.requests.get", mocked_get)
+
+        result = json.loads(collaboration_search_knowledge(query="hermes"))
+
+        assert result["success"] is True
+        assert mocked_get.call_args.args[0] == "http://legacy.example.test/api/v1/search/knowledge"
+
+    def test_board_search_preserves_board_items(self, monkeypatch):
+        board_item = {"id": "board-1", "category": "board_entry", "title": "reply needed"}
+
+        def fake_get(url, **kwargs):
+            response = Mock()
+            response.ok = True
+            response.status_code = 200
+            response.url = f"{url}?{urlencode(kwargs['params'])}"
+            response.json.return_value = {"items": [board_item], "count": 1}
+            return response
+
+        mocked_get = Mock(side_effect=fake_get)
+        monkeypatch.setattr("tools.collaboration_tool.requests.get", mocked_get)
+
+        result = json.loads(collaboration_board_search(q="reply", category="board_entry", limit=1))
+
+        assert result["success"] is True
+        assert result["items"] == [board_item]
+        assert result["data"]["items"] == [board_item]
+        assert result["count"] == 1
+        assert mocked_get.call_args.args[0] == "http://collaboration.ktl.com/api/v1/board/search"
+        assert mocked_get.call_args.kwargs["params"] == {"q": "reply", "category": "board_entry", "limit": 1}
+
+    def test_search_tools_return_empty_result_on_network_error(self, monkeypatch):
+        def fail(*args, **kwargs):
+            raise requests.RequestException("boom")
+
+        monkeypatch.setattr("tools.collaboration_tool.requests.get", fail)
+
+        result = json.loads(collaboration_board_search(q="reply"))
+
+        assert result["success"] is False
+        assert "boom" in result["error"]
+        assert result["items"] == []
+        assert result["results"] == []
+        assert result["count"] == 0
+
+    def test_search_tools_return_empty_result_on_json_error(self, monkeypatch):
+        response = Mock()
+        response.ok = True
+        response.status_code = 200
+        response.url = "http://collaboration.ktl.com/api/v1/search/knowledge?query=bad"
+        response.text = "not json"
+        response.json.side_effect = ValueError("bad json")
+        monkeypatch.setattr("tools.collaboration_tool.requests.get", Mock(return_value=response))
+
+        result = json.loads(collaboration_search_knowledge(query="bad"))
+
+        assert result["success"] is False
+        assert "invalid JSON" in result["error"]
+        assert result["items"] == []
+        assert result["results"] == []
+        assert result["count"] == 0
+
+    def test_search_tools_require_query_text(self):
+        knowledge = json.loads(collaboration_search_knowledge(query=""))
+        board = json.loads(collaboration_board_search(q=""))
+
+        assert knowledge["items"] == []
+        assert knowledge["results"] == []
+        assert knowledge["count"] == 0
+        assert "query" in knowledge["error"]
+        assert board["items"] == []
+        assert board["results"] == []
+        assert board["count"] == 0
+        assert "q" in board["error"]
