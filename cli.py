@@ -3414,6 +3414,9 @@ class HermesCLI:
         if subcommand == "respond":
             self._handle_collab_respond_command(cmd)
             return
+        if subcommand == "autonomy":
+            self._handle_collab_autonomy_command(parts[2:])
+            return
         if subcommand == "inbox":
             from hermes_cli.config import load_config
 
@@ -3436,7 +3439,7 @@ class HermesCLI:
         }
         action = action_map.get(subcommand)
         if not action:
-            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|monitor status|monitor run <daily|urgent|inbound>|monitor install <daily|urgent|inbound>]")
+            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|autonomy|monitor status|monitor run <daily|urgent|inbound>|monitor install <daily|urgent|inbound>]")
             return
         if subcommand == "project" and not project:
             _cprint("  Usage: /collab project <name>")
@@ -3551,11 +3554,81 @@ class HermesCLI:
             if typed != action_id:
                 _cprint("Collaboration response post denied. No network write was performed.")
                 return
-            post_result = post_collaboration_response(action_id)
+            post_result = post_collaboration_response(
+                action_id,
+                approval={"approved": True, "approver": "local_cli", "confirmation": "exact_action_id"},
+            )
             if not post_result.get("success"):
                 _cprint(f"  Failed to post collaboration response: {post_result.get('error') or (post_result.get('result') or {}).get('error') or 'unknown error'}")
                 return
             _cprint(f"Posted collaboration response for {draft.get('request_id')} with action ID {action_id}.")
+            return
+
+        _cprint(usage)
+
+    def _handle_collab_autonomy_command(self, args: list[str]):
+        """Handle local collaboration autonomy evidence commands."""
+        from tools.collaboration_autonomy import (
+            append_evidence_event,
+            compute_autonomy_kpis,
+            evaluate_autonomy_gate,
+            list_evidence_events,
+        )
+
+        usage = "  Usage: /collab autonomy log <category> <event> [request_id] [action_id]|list [category]|kpis|gate"
+        action = args[0].lower() if args else "gate"
+
+        if action == "log":
+            if len(args) < 3:
+                _cprint("  Usage: /collab autonomy log <category> <event> [request_id] [action_id]")
+                return
+            result = append_evidence_event(
+                args[1],
+                args[2],
+                request_id=args[3] if len(args) > 3 else "",
+                action_id=args[4] if len(args) > 4 else "",
+                result="manual",
+                metadata={"source": "local_cli"},
+            )
+            if not result.get("success"):
+                _cprint(f"  Failed to log autonomy evidence: {result.get('error', 'unknown error')}")
+                return
+            event = result["event"]
+            _cprint(
+                "Logged local autonomy evidence.\n\n"
+                f"Event ID: {event.get('id')}\n"
+                f"Category: {event.get('category')}\n"
+                f"Event: {event.get('event')}\n"
+                f"Evidence log: {result.get('evidence_log_path')}\n\n"
+                "Local evidence only. No shared-state write was performed."
+            )
+            return
+
+        if action == "list":
+            result = list_evidence_events(category=args[1] if len(args) > 1 else "")
+            if not result.get("success"):
+                _cprint(f"  Failed to list autonomy evidence: {result.get('error', 'unknown error')}")
+                return
+            _cprint(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+
+        if action == "kpis":
+            _cprint(json.dumps(compute_autonomy_kpis(), ensure_ascii=False, indent=2))
+            return
+
+        if action == "gate":
+            result = evaluate_autonomy_gate()
+            lines = [
+                f"Autonomy readiness: {result.get('result')}",
+                f"Allowed next step: {result.get('allowed_next_step')}",
+                "Autonomous shared-state writes enabled: no",
+                "Shared-state writes allowed: no",
+            ]
+            reasons = result.get("reasons") or []
+            if reasons:
+                lines.extend(["", "Reasons:"])
+                lines.extend(f"- {reason}" for reason in reasons)
+            _cprint("\n".join(lines))
             return
 
         _cprint(usage)

@@ -184,8 +184,66 @@ class TestCLIQuickCommands:
             result = cli.process_command("/collab respond post collab-act-1")
 
         assert result is True
-        post_response.assert_called_once_with("collab-act-1")
+        post_response.assert_called_once_with(
+            "collab-act-1",
+            approval={"approved": True, "approver": "local_cli", "confirmation": "exact_action_id"},
+        )
         assert "Posted collaboration response" in cprint.call_args.args[0]
+
+    def test_collab_autonomy_log_prints_local_only_message(self):
+        cli = self._make_cli({})
+        event = {"id": "evt-1", "category": "Detection", "event": "monitor_run"}
+        with patch("tools.collaboration_autonomy.append_evidence_event", return_value={"success": True, "event": event, "evidence_log_path": "/tmp/evidence.json"}) as append, \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab autonomy log Detection monitor_run REQ-1 A1")
+
+        assert result is True
+        append.assert_called_once_with(
+            "Detection",
+            "monitor_run",
+            request_id="REQ-1",
+            action_id="A1",
+            result="manual",
+            metadata={"source": "local_cli"},
+        )
+        printed = cprint.call_args.args[0]
+        assert "evt-1" in printed
+        assert "No shared-state write" in printed
+
+    def test_collab_autonomy_kpis_prints_json(self):
+        cli = self._make_cli({})
+        with patch("tools.collaboration_autonomy.compute_autonomy_kpis", return_value={"success": True, "monitor_success_rate": 1.0}), \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab autonomy kpis")
+
+        assert result is True
+        printed = cprint.call_args.args[0]
+        assert '"monitor_success_rate": 1.0' in printed
+
+    def test_collab_autonomy_gate_prints_disabled_shared_writes(self):
+        cli = self._make_cli({})
+        gate = {
+            "result": "Fail",
+            "allowed_next_step": "Continue HITL; improve workflow; remeasure.",
+            "reasons": ["Insufficient data"],
+        }
+        with patch("tools.collaboration_autonomy.evaluate_autonomy_gate", return_value=gate), \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab autonomy gate")
+
+        assert result is True
+        printed = cprint.call_args.args[0]
+        assert "Autonomy readiness: Fail" in printed
+        assert "Shared-state writes allowed: no" in printed
+        assert "Insufficient data" in printed
+
+    def test_collab_autonomy_unknown_subcommand_prints_usage(self):
+        cli = self._make_cli({})
+        with patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab autonomy nope")
+
+        assert result is True
+        assert "Usage: /collab autonomy" in cprint.call_args.args[0]
 
 
 # ── Gateway tests ──────────────────────────────────────────────────────────

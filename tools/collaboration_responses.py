@@ -94,6 +94,15 @@ def _generate_action_id(request_id: str, body: str, now: str) -> str:
     return f"collab-act-{stamp}-{digest}"
 
 
+def _log_evidence(*args: Any, **kwargs: Any) -> None:
+    try:
+        from tools.collaboration_autonomy import append_evidence_event
+
+        append_evidence_event(*args, **kwargs)
+    except Exception:
+        return
+
+
 def draft_collaboration_response(request_id: str, body: str, config: Dict[str, Any] | None = None) -> Dict[str, Any]:
     request_id = (request_id or "").strip()
     body = (body or "").strip()
@@ -119,6 +128,16 @@ def draft_collaboration_response(request_id: str, body: str, config: Dict[str, A
     }
     outbox["drafts"][action_id] = draft
     _save_response_outbox(path, outbox)
+    _log_evidence(
+        "Draft",
+        "draft_created",
+        request_id=request_id,
+        action_id=action_id,
+        result="success",
+        timestamp=now,
+        metadata={"operation": "respond", "template": False},
+        config=config,
+    )
     return {"success": True, "action_id": action_id, "draft": draft, "outbox_path": str(path)}
 
 
@@ -171,7 +190,11 @@ def _post_request_response(
     return result
 
 
-def post_collaboration_response(action_id: str, config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def post_collaboration_response(
+    action_id: str,
+    config: Dict[str, Any] | None = None,
+    approval: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     action_id = (action_id or "").strip()
     if not action_id:
         return {"success": False, "error": "action_id is required"}
@@ -195,6 +218,19 @@ def post_collaboration_response(action_id: str, config: Dict[str, Any] | None = 
     if not body:
         return {"success": False, "error": "draft response body is missing", "draft": draft}
 
+    approval = approval if isinstance(approval, dict) else {}
+    approved = approval.get("approved") is True
+    if approved:
+        _log_evidence(
+            "Approval",
+            "approved",
+            request_id=request_id,
+            action_id=action_id,
+            result="success",
+            metadata=approval,
+            config=config,
+        )
+
     try:
         result = _post_request_response(request_id, body, action_id, config)
     except requests.RequestException as exc:
@@ -204,6 +240,32 @@ def post_collaboration_response(action_id: str, config: Dict[str, Any] | None = 
         draft["last_error"] = f"{type(exc).__name__}: {exc}"
         outbox["drafts"][action_id] = draft
         _save_response_outbox(path, outbox)
+        _log_evidence(
+            "Write",
+            "network_write_attempted",
+            request_id=request_id,
+            action_id=action_id,
+            result="failure",
+            timestamp=now,
+            metadata={
+                "approved": approved,
+                "operation": "respond",
+                "endpoint": f"/api/v1/board/items/{request_id}/respond",
+                "idempotency_key": action_id,
+                "error": draft["last_error"],
+            },
+            config=config,
+        )
+        _log_evidence(
+            "Failure",
+            "api_failure",
+            request_id=request_id,
+            action_id=action_id,
+            result="failure",
+            timestamp=now,
+            metadata={"exception_type": type(exc).__name__, "error": str(exc)},
+            config=config,
+        )
         return {"success": False, "error": draft["last_error"], "draft": draft}
 
     now = _utc_now()
@@ -218,6 +280,22 @@ def post_collaboration_response(action_id: str, config: Dict[str, Any] | None = 
         draft["status"] = "failed"
         draft["last_error"] = str(result.get("error") or "Collaboration response post failed")
         draft["last_status_code"] = result.get("status_code")
+    _log_evidence(
+        "Write",
+        "network_write_attempted",
+        request_id=request_id,
+        action_id=action_id,
+        result="success" if result.get("success") else "failure",
+        timestamp=now,
+        metadata={
+            "approved": approved,
+            "operation": "respond",
+            "endpoint": f"/api/v1/board/items/{request_id}/respond",
+            "idempotency_key": action_id,
+            "status_code": result.get("status_code"),
+        },
+        config=config,
+    )
     outbox["drafts"][action_id] = draft
     _save_response_outbox(path, outbox)
     return {"success": bool(result.get("success")), "result": result, "draft": draft, "outbox_path": str(path)}

@@ -6,7 +6,7 @@ from tools import collaboration_responses as responses
 
 
 def test_draft_collaboration_response_writes_local_draft(tmp_path):
-    config = {"response_outbox_path": str(tmp_path / "outbox.json")}
+    config = {"response_outbox_path": str(tmp_path / "outbox.json"), "autonomy_evidence_path": str(tmp_path / "evidence.json")}
 
     result = responses.draft_collaboration_response("REQ-1", "Looks good", config=config)
 
@@ -17,6 +17,9 @@ def test_draft_collaboration_response_writes_local_draft(tmp_path):
     assert draft["body"] == "Looks good"
     assert draft["status"] == "draft"
     assert (tmp_path / "outbox.json").exists()
+    evidence = (tmp_path / "evidence.json").read_text()
+    assert "draft_created" in evidence
+    assert draft["action_id"] in evidence
 
 
 def test_draft_collaboration_response_rejects_empty_request_id(tmp_path):
@@ -51,7 +54,11 @@ def test_list_collaboration_response_drafts_returns_newest_first(tmp_path, monke
 
 
 def test_post_collaboration_response_posts_once_and_marks_posted(tmp_path, monkeypatch):
-    config = {"response_outbox_path": str(tmp_path / "outbox.json"), "base_url": "http://example.test"}
+    config = {
+        "response_outbox_path": str(tmp_path / "outbox.json"),
+        "autonomy_evidence_path": str(tmp_path / "evidence.json"),
+        "base_url": "http://example.test",
+    }
     draft = responses.draft_collaboration_response("REQ-1", "Looks good", config=config)["draft"]
     calls = []
 
@@ -61,7 +68,11 @@ def test_post_collaboration_response_posts_once_and_marks_posted(tmp_path, monke
 
     monkeypatch.setattr(responses.requests, "post", fake_post)
 
-    result = responses.post_collaboration_response(draft["action_id"], config=config)
+    result = responses.post_collaboration_response(
+        draft["action_id"],
+        config=config,
+        approval={"approved": True, "approver": "local_cli", "confirmation": "exact_action_id"},
+    )
     again = responses.post_collaboration_response(draft["action_id"], config=config)
 
     assert result["success"] is True
@@ -80,10 +91,14 @@ def test_post_collaboration_response_posts_once_and_marks_posted(tmp_path, monke
     ]
     assert again["success"] is False
     assert "already posted" in again["error"]
+    evidence = (tmp_path / "evidence.json").read_text()
+    assert "approved" in evidence
+    assert "network_write_attempted" in evidence
+    assert '"approved": true' in evidence
 
 
 def test_post_collaboration_response_failed_api_remains_retryable(tmp_path, monkeypatch):
-    config = {"response_outbox_path": str(tmp_path / "outbox.json"), "base_url": "http://example.test"}
+    config = {"response_outbox_path": str(tmp_path / "outbox.json"), "autonomy_evidence_path": str(tmp_path / "evidence.json"), "base_url": "http://example.test"}
     draft = responses.draft_collaboration_response("REQ-1", "Looks good", config=config)["draft"]
 
     def fake_post(url, headers, json, timeout):
@@ -96,6 +111,9 @@ def test_post_collaboration_response_failed_api_remains_retryable(tmp_path, monk
     assert result["success"] is False
     assert result["draft"]["status"] == "failed"
     assert result["draft"]["last_status_code"] == 500
+    evidence = (tmp_path / "evidence.json").read_text()
+    assert "network_write_attempted" in evidence
+    assert '"approved": false' in evidence
 
 
 def test_post_collaboration_response_refuses_missing_action_id(tmp_path):
@@ -108,7 +126,7 @@ def test_post_collaboration_response_refuses_missing_action_id(tmp_path):
 
 
 def test_post_collaboration_response_records_request_exception(tmp_path, monkeypatch):
-    config = {"response_outbox_path": str(tmp_path / "outbox.json"), "base_url": "http://example.test"}
+    config = {"response_outbox_path": str(tmp_path / "outbox.json"), "autonomy_evidence_path": str(tmp_path / "evidence.json"), "base_url": "http://example.test"}
     draft = responses.draft_collaboration_response("REQ-1", "Looks good", config=config)["draft"]
 
     def fake_post(url, headers, json, timeout):
@@ -121,3 +139,6 @@ def test_post_collaboration_response_records_request_exception(tmp_path, monkeyp
     assert result["success"] is False
     assert result["draft"]["status"] == "failed"
     assert "Timeout" in result["error"]
+    evidence = (tmp_path / "evidence.json").read_text()
+    assert "api_failure" in evidence
+    assert "network_write_attempted" in evidence

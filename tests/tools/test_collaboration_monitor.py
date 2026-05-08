@@ -223,11 +223,23 @@ class TestCollaborationMonitor:
 
         monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
 
-        result = run_monitor("inbound_requests", config={"inbound_state_path": str(state_path), "inbound_inbox_path": str(inbox_path)})
+        evidence_path = tmp_path / "evidence.json"
+        result = run_monitor(
+            "inbound_requests",
+            config={
+                "inbound_state_path": str(state_path),
+                "inbound_inbox_path": str(inbox_path),
+                "autonomy_evidence_path": str(evidence_path),
+            },
+        )
 
         assert result["success"] is True
         assert result["kind"] == "inbound_requests"
         assert result["should_notify"] is True
+        evidence = evidence_path.read_text()
+        assert "monitor_run" in evidence
+        assert "inbound_request_detected" in evidence
+        assert "REQ-1" in evidence
 
     def test_read_inbound_inbox_returns_pending_items(self, tmp_path):
         inbox_path = tmp_path / "inbox.json"
@@ -314,6 +326,21 @@ class TestCollaborationMonitor:
         assert "local inbox" in result["text"]
         assert "disk full" in result["error"]
         assert result["counts"] == {"new": 1, "open": 1, "seen": 1, "pending": 1}
+
+    def test_run_monitor_evidence_logging_failure_does_not_fail_result(self, monkeypatch):
+        def fake_tool(**kwargs):
+            return _payload(text="daily text")
+
+        def fail_append(*args, **kwargs):
+            raise OSError("cannot log")
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+        monkeypatch.setattr("tools.collaboration_autonomy.append_evidence_event", fail_append)
+
+        result = run_monitor("daily")
+
+        assert result["success"] is True
+        assert result["kind"] == "daily_brief"
 
     def test_unknown_monitor_kind_is_rejected(self):
         result = run_monitor("write_actions")

@@ -11,6 +11,7 @@
 - [x] Surface inbound Hermes-targeted requests as local pending inbox items with deduplicated notifications.
 - [x] Add an approval-gated flow for drafting and posting collaboration responses.
 - [x] Define strict HITL-to-autonomous PM operating criteria and pass/fail readiness categories.
+- [x] Add local autonomy evidence logging, KPI summary, and readiness gate commands.
 - [ ] Collect HITL KPI evidence and run strict pass/fail readiness evaluation before any autonomous PM loop. ← **current**
 - [ ] Design narrow limited-autonomy templates only after the readiness gate passes.
 

@@ -71,6 +71,15 @@ def _call_collaboration(action: str, **kwargs: Any) -> Dict[str, Any]:
         return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def _log_evidence(*args: Any, **kwargs: Any) -> None:
+    try:
+        from tools.collaboration_autonomy import append_evidence_event
+
+        append_evidence_event(*args, **kwargs)
+    except Exception:
+        return
+
+
 def _item_title(item: Dict[str, Any]) -> str:
     for key in ("title", "subject", "name", "request_id", "id"):
         value = item.get(key)
@@ -500,7 +509,52 @@ def run_monitor(
         }
 
     if normalized == "daily_brief":
-        return build_daily_brief(limit=limit, project=project)
-    if normalized == "inbound_requests":
-        return detect_inbound_requests(limit=limit, project=project, config=config)
-    return evaluate_urgent_alerts(limit=limit, project=project, config=config)
+        result = build_daily_brief(limit=limit, project=project)
+    elif normalized == "inbound_requests":
+        result = detect_inbound_requests(limit=limit, project=project, config=config)
+    else:
+        result = evaluate_urgent_alerts(limit=limit, project=project, config=config)
+
+    _log_evidence(
+        "Detection",
+        "monitor_run",
+        result="success" if result.get("success") else "failure",
+        metadata={
+            "kind": normalized,
+            "project": project,
+            "limit": limit,
+            "should_notify": result.get("should_notify"),
+            "severity": result.get("severity"),
+            "counts": result.get("counts") or {},
+            "error": result.get("error"),
+        },
+        config=config,
+    )
+    if normalized == "inbound_requests" and result.get("success"):
+        for item in _items(result.get("new_items")):
+            request_id = str(item.get("_inbound_id") or _request_identity(item))
+            _log_evidence(
+                "Detection",
+                "inbound_request_detected",
+                request_id=request_id,
+                result="success",
+                metadata={"kind": normalized, "project": project, "title": _item_title(item)},
+                config=config,
+            )
+    if normalized == "urgent_alert" and result.get("success") and result.get("should_notify"):
+        _log_evidence(
+            "Detection",
+            "urgent_alert_detected",
+            result="success",
+            metadata={"kind": normalized, "project": project, "counts": result.get("counts") or {}},
+            config=config,
+        )
+    if not result.get("success"):
+        _log_evidence(
+            "Failure",
+            "api_failure",
+            result="failure",
+            metadata={"kind": normalized, "project": project, "error": result.get("error")},
+            config=config,
+        )
+    return result
