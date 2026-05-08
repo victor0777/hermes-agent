@@ -74,7 +74,7 @@ def test_post_collaboration_response_posts_once_and_marks_posted(tmp_path, monke
                 "Content-Type": "application/json",
                 "Idempotency-Key": draft["action_id"],
             },
-            "json": {"body": "Looks good", "client_msg_id": draft["action_id"]},
+            "json": {"assignee": "hermes-agent", "body": "Looks good", "client_msg_id": draft["action_id"]},
             "timeout": responses.WRITE_TIMEOUT_SECONDS,
         }
     ]

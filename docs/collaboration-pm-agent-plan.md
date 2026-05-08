@@ -15,13 +15,16 @@ Delivered capabilities:
 - read-only collaboration knowledge and Agent Board search tools
 - local read-only inbox persistence for collaboration requests addressed to `hermes-agent`
 - `/collab inbox` review flow for CLI and guarded gateway use
+- CLI-only approval-gated response drafts and posting with exact action-ID confirmation
+- local end-to-end smoke coverage for inbound request → pending inbox → approved response
 
 Current gap:
 
 - Collaboration MCP/REST can create and store requests addressed to `hermes-agent`.
 - Hermes can detect those records, deduplicate notifications, and keep pending local inbox items.
-- Hermes still does not automatically draft, post, close, reassign, reprioritize, or execute repository-local work from those requests.
-- Shared-state writeback and runtime invocation remain future approval-gated phases.
+- Hermes still does not automatically close, reassign, reprioritize, or execute repository-local work from those requests.
+- Shared-state response writeback exists only through the local CLI approval-gated response flow.
+- Runtime invocation remains a future approval-gated phase.
 
 ## User-Level Goal
 
@@ -476,16 +479,19 @@ Exit criteria:
 - The bridge can avoid repeating the same unchanged request. — delivered for seen-state notification suppression
 - Shared-state writeback remains unavailable or explicitly approval-gated. — delivered by keeping this phase read-only
 
-### Phase 5 — Approval-gated write actions — planned
+### Phase 5 — Approval-gated write actions — partially delivered
 
 Goal:
 
 Allow Hermes to prepare shared-state changes, but require user approval before execution.
 
-Candidate write actions:
+Delivered write action:
+
+- reply to request through `/collab respond draft|list|show|post`
+
+Remaining candidate write actions:
 
 - create clarification request
-- reply to request
 - close request as completed/duplicate/wontfix
 - create stale report ping
 - update task state
@@ -528,10 +534,43 @@ Suggested structured action shape:
 
 Exit criteria:
 
-- User can approve a single proposed action.
-- Hermes executes only that approved action.
-- No batch write actions happen without explicit approval.
-- The read-only tool remains usable without write credentials.
+- User can approve a single proposed action. — delivered for collaboration responses
+- Hermes executes only that approved action. — delivered for collaboration responses
+- No batch write actions happen without explicit approval. — delivered for collaboration responses
+- The read-only tool remains usable without write credentials. — delivered
+
+## Always-on runtime deployment expectations
+
+Before Hermes is run as an always-on collaboration PM service, deployment should satisfy these constraints:
+
+- Run the service with read-only collaboration monitoring enabled first; keep response posting CLI-only unless a separate approval channel is explicitly designed.
+- Bind any local web/gateway service to `127.0.0.1` by default; expose broader network access only after port, auth, and source-network review.
+- Store collaboration API credentials only in host-local environment files or the configured secret mechanism; do not commit tokens to Hermes config, logs, or reports.
+- Keep `collaboration.monitor.gateway_install_enabled=false` unless the operator intentionally allows gateway users to install local cron jobs.
+- Use deterministic monitor jobs for daily, urgent, and inbound checks; do not invoke the generic LLM loop from a scheduler until an invocation contract, idempotency, and failure policy are documented.
+- Persist monitor state and response drafts under Hermes home so restarts do not duplicate notifications or lose pending approvals.
+- Record service port, startup command, log path, and restart policy in project documentation before enabling a long-running process.
+- Register any cron, systemd timer, or background agent in the shared agent registry when it becomes a persistent automation.
+- Run repeated manual approval-gated response operations before enabling any limited automation that writes shared collaboration state.
+
+## Autonomy readiness operating criteria
+
+Hermes uses `docs/autonomous-pm-operating-criteria.md` as the operating manual for deciding whether HITL collaboration PM operation is ready to progress toward an autonomous PM loop.
+
+The readiness criteria are intentionally strict:
+
+- at least 14 calendar days of evidence
+- at least 10 live HITL handled requests
+- monitor success rate >= 98%
+- detection coverage >= 95% for requests addressed to `hermes-agent`
+- draft acceptance rate >= 90%
+- human denial rate <= 10%
+- post success rate >= 95%
+- 0 unapproved writes
+- 0 critical errors
+- 0 forbidden-scope automation attempts
+
+Passing the readiness criteria does not enable autonomous shared-state writes. A pass only allows a separate limited-autonomy design review. Until then, shared-state writes remain CLI approval-gated and exact action-ID confirmed.
 
 ### Phase 6 — Limited automation — planned
 

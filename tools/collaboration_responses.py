@@ -64,6 +64,12 @@ def _response_outbox_path(config: Dict[str, Any] | None = None) -> Path:
     return get_hermes_home() / "collaboration" / "response_outbox.json"
 
 
+def _response_assignee(config: Dict[str, Any] | None = None) -> str:
+    responses = _response_config(config)
+    assignee = responses.get("assignee") or (config or {}).get("response_assignee") or "hermes-agent"
+    return str(assignee).strip() or "hermes-agent"
+
+
 def _load_response_outbox(path: Path) -> Dict[str, Any]:
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -148,7 +154,7 @@ def _post_request_response(
     response = requests.post(
         url,
         headers=headers,
-        json={"body": body, "client_msg_id": action_id},
+        json={"assignee": _response_assignee(config), "body": body, "client_msg_id": action_id},
         timeout=WRITE_TIMEOUT_SECONDS,
     )
     result: Dict[str, Any] = {

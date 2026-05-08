@@ -1,5 +1,7 @@
 import json
+from types import SimpleNamespace
 
+from tools import collaboration_responses as responses
 from tools.collaboration_monitor import (
     SILENT_MARKER,
     build_daily_brief,
@@ -250,6 +252,45 @@ class TestCollaborationMonitor:
         assert result["success"] is True
         assert result["items"] == []
         assert "No pending inbound" in result["text"]
+
+    def test_inbound_to_approved_response_smoke_flow(self, monkeypatch, tmp_path):
+        state_path = tmp_path / "seen.json"
+        inbox_path = tmp_path / "inbox.json"
+        outbox_path = tmp_path / "outbox.json"
+        calls = []
+
+        def fake_tool(**kwargs):
+            return _payload(data=[{"request_id": "REQ-1", "title": "Needs response", "priority": "medium"}])
+
+        def fake_post(url, headers, json, timeout):
+            calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+            return SimpleNamespace(ok=True, status_code=200, url=url, json=lambda: {"ok": True}, text="")
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+        monkeypatch.setattr(responses.requests, "post", fake_post)
+        monitor_config = {"inbound_state_path": str(state_path), "inbound_inbox_path": str(inbox_path)}
+        response_config = {"response_outbox_path": str(outbox_path), "base_url": "http://example.test"}
+
+        detected = detect_inbound_requests(project="hermes-agent", config=monitor_config)
+        inbox = read_inbound_inbox(config=monitor_config)
+        draft = responses.draft_collaboration_response(inbox["items"][0]["request_id"], "Response ready", config=response_config)
+        posted = responses.post_collaboration_response(draft["action_id"], config=response_config)
+
+        assert detected["should_notify"] is True
+        assert inbox["items"][0]["request_id"] == "REQ-1"
+        assert draft["draft"]["status"] == "draft"
+        assert posted["success"] is True
+        assert posted["draft"]["status"] == "posted"
+        assert calls == [{
+            "url": "http://example.test/api/v1/board/items/REQ-1/respond",
+            "headers": {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Idempotency-Key": draft["action_id"],
+            },
+            "json": {"assignee": "hermes-agent", "body": "Response ready", "client_msg_id": draft["action_id"]},
+            "timeout": responses.WRITE_TIMEOUT_SECONDS,
+        }]
 
     def test_inbound_monitor_inbox_save_failure_returns_error(self, monkeypatch, tmp_path):
         state_path = tmp_path / "seen.json"
