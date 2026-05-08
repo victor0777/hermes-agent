@@ -169,9 +169,11 @@ def cronjob(
         if normalized == "create_collaboration_monitor":
             if not schedule:
                 return json.dumps({"success": False, "error": "schedule is required for create_collaboration_monitor"}, indent=2)
-            normalized_kind = (monitor_kind or "").strip().lower()
-            if normalized_kind not in {"daily_brief", "urgent_alert"}:
-                return json.dumps({"success": False, "error": "monitor_kind must be one of: daily_brief, urgent_alert"}, indent=2)
+            from tools.collaboration_monitor import MONITOR_KINDS, normalize_monitor_kind
+
+            normalized_kind = normalize_monitor_kind(monitor_kind or "")
+            if normalized_kind not in MONITOR_KINDS:
+                return json.dumps({"success": False, "error": "monitor_kind must be one of: daily_brief, urgent_alert, inbound_requests"}, indent=2)
             safe_limit = max(1, int(limit or 20))
             job = create_job(
                 prompt="",
@@ -448,7 +450,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "monitor_kind": {
                 "type": "string",
-                "description": "For create_collaboration_monitor: daily_brief or urgent_alert"
+                "description": "For create_collaboration_monitor: daily_brief, urgent_alert, or inbound_requests"
             },
             "limit": {
                 "type": "integer",

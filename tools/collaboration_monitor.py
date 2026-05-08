@@ -1,12 +1,43 @@
 """Deterministic read-only collaboration PM monitoring."""
 
+import hashlib
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List
 
+from hermes_constants import get_hermes_home
 from tools.collaboration_tool import collaboration_tool
+from utils import atomic_json_write
 
 SILENT_MARKER = "[SILENT]"
-_MONITOR_KINDS = {"daily_brief", "urgent_alert"}
+MONITOR_KIND_ALIASES = {
+    "daily": "daily_brief",
+    "daily_brief": "daily_brief",
+    "urgent": "urgent_alert",
+    "urgent_alert": "urgent_alert",
+    "inbound": "inbound_requests",
+    "inbound_requests": "inbound_requests",
+    "requests": "inbound_requests",
+    "new": "inbound_requests",
+}
+MONITOR_KINDS = frozenset(MONITOR_KIND_ALIASES.values())
+MONITOR_SCHEDULE_KEYS = {
+    "daily_brief": "daily_schedule",
+    "urgent_alert": "urgent_schedule",
+    "inbound_requests": "inbound_schedule",
+}
+DEFAULT_MONITOR_SCHEDULES = {
+    "daily_brief": "57 8 * * *",
+    "urgent_alert": "every 4h",
+    "inbound_requests": "every 30m",
+}
+_REQUEST_ID_KEYS = ("request_id", "id")
+_REQUEST_IDENTITY_FIELDS = ("title", "subject", "from", "from_project", "to", "to_project", "created_at", "date")
+
+
+def normalize_monitor_kind(value: str) -> str | None:
+    return MONITOR_KIND_ALIASES.get((value or "").strip().lower())
 
 
 def _monitor_config() -> Dict[str, Any]:
@@ -59,6 +90,110 @@ def _compact_items(items: List[Dict[str, Any]], limit: int = 5) -> List[str]:
     return lines
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _inbound_state_path(config: Dict[str, Any] | None = None) -> Path:
+    configured = (config or {}).get("inbound_state_path")
+    if configured:
+        return Path(str(configured)).expanduser()
+    return get_hermes_home() / "collaboration" / "inbound_seen_requests.json"
+
+
+def _inbound_inbox_path(config: Dict[str, Any] | None = None) -> Path:
+    configured = (config or {}).get("inbound_inbox_path")
+    if configured:
+        return Path(str(configured)).expanduser()
+    return get_hermes_home() / "collaboration" / "inbound_inbox.json"
+
+
+def _load_inbound_state(path: Path) -> Dict[str, Any]:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        loaded = {}
+    if not isinstance(loaded, dict):
+        loaded = {}
+    seen = loaded.get("seen")
+    if not isinstance(seen, dict):
+        loaded["seen"] = {}
+    loaded.setdefault("version", 1)
+    return loaded
+
+
+def _load_inbound_inbox(path: Path) -> Dict[str, Any]:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        loaded = {}
+    if not isinstance(loaded, dict):
+        loaded = {}
+    items = loaded.get("items")
+    if not isinstance(items, dict):
+        loaded["items"] = {}
+    loaded.setdefault("version", 1)
+    return loaded
+
+
+def _save_inbound_state(path: Path, state: Dict[str, Any]) -> None:
+    atomic_json_write(path, state, indent=2, sort_keys=True)
+
+
+def _save_inbound_inbox(path: Path, inbox: Dict[str, Any]) -> None:
+    atomic_json_write(path, inbox, indent=2, sort_keys=True)
+
+
+def _request_identity(item: Dict[str, Any]) -> str:
+    for key in _REQUEST_ID_KEYS:
+        value = item.get(key)
+        if value:
+            return str(value)
+    parts = [str(item.get(key) or "") for key in _REQUEST_IDENTITY_FIELDS]
+    digest = hashlib.sha256("␟".join(parts).encode("utf-8")).hexdigest()[:16]
+    return f"derived-{digest}"
+
+
+def _request_metadata(item: Dict[str, Any], now: str) -> Dict[str, Any]:
+    return {
+        "first_seen_at": now,
+        "last_seen_at": now,
+        "title": _item_title(item),
+        "priority": item.get("priority"),
+        "project": item.get("to_project") or item.get("project"),
+        "status": item.get("status"),
+    }
+
+
+def _inbox_item(item: Dict[str, Any], request_id: str, now: str, existing: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    first_seen_at = now
+    status = "pending"
+    if isinstance(existing, dict):
+        first_seen_at = str(existing.get("first_seen_at") or now)
+        status = str(existing.get("status") or "pending")
+    return {
+        "id": request_id,
+        "request_id": item.get("request_id") or item.get("id") or request_id,
+        "title": _item_title(item),
+        "priority": item.get("priority"),
+        "from_project": item.get("from_project") or item.get("from"),
+        "to_project": item.get("to_project") or item.get("project") or item.get("to"),
+        "status": status,
+        "first_seen_at": first_seen_at,
+        "last_seen_at": now,
+        "source": "collaboration",
+        "raw": {key: value for key, value in item.items() if key != "_inbound_id"},
+    }
+
+
+def _pending_inbox_items(inbox: Dict[str, Any]) -> List[Dict[str, Any]]:
+    items = inbox.get("items")
+    if not isinstance(items, dict):
+        return []
+    pending = [item for item in items.values() if isinstance(item, dict) and item.get("status", "pending") == "pending"]
+    return sorted(pending, key=lambda item: str(item.get("last_seen_at") or ""), reverse=True)
+
+
 def build_daily_brief(limit: int = 20, project: str = "") -> Dict[str, Any]:
     result = _call_collaboration("brief", project=project, limit=limit)
     if not result.get("success"):
@@ -79,6 +214,172 @@ def build_daily_brief(limit: int = 20, project: str = "") -> Dict[str, Any]:
         "severity": "info",
         "text": result.get("text") or json.dumps(result.get("data"), ensure_ascii=False, indent=2),
         "counts": {},
+    }
+
+
+def detect_inbound_requests(
+    limit: int = 20,
+    project: str = "",
+    config: Dict[str, Any] | None = None,
+    mark_seen: bool | None = None,
+) -> Dict[str, Any]:
+    monitor_config = {**_monitor_config(), **(config or {})}
+    if mark_seen is None:
+        mark_seen = bool(monitor_config.get("inbound_mark_seen_on_run", True))
+
+    open_requests = _call_collaboration(
+        "list_requests",
+        project=project,
+        status="open",
+        limit=limit,
+    )
+    if not open_requests.get("success"):
+        error = open_requests.get("error") or "unknown error"
+        return {
+            "success": False,
+            "kind": "inbound_requests",
+            "should_notify": True,
+            "severity": "error",
+            "text": f"Collaboration inbound request monitor failed: {error}",
+            "counts": {},
+            "error": error,
+        }
+
+    open_items = _items(open_requests.get("data"))
+    state_path = _inbound_state_path(monitor_config)
+    inbox_path = _inbound_inbox_path(monitor_config)
+    state = _load_inbound_state(state_path)
+    inbox = _load_inbound_inbox(inbox_path)
+    seen = state["seen"]
+    inbox_items = inbox["items"]
+    now = _utc_now()
+
+    open_items_with_ids = [
+        ({**item, "_inbound_id": request_id}, request_id)
+        for item in open_items
+        for request_id in [_request_identity(item)]
+    ]
+    new_items = [item for item, request_id in open_items_with_ids if request_id not in seen]
+
+    if mark_seen:
+        seen_changed = False
+        inbox_changed = False
+        for item, request_id in open_items_with_ids:
+            metadata = _request_metadata(item, now)
+            existing_seen = seen.get(request_id)
+            if isinstance(existing_seen, dict):
+                metadata["first_seen_at"] = existing_seen.get("first_seen_at") or now
+            seen_changed = seen_changed or existing_seen != metadata
+            seen[request_id] = metadata
+
+            existing_inbox = inbox_items.get(request_id)
+            pending_item = _inbox_item(item, request_id, now, existing_inbox if isinstance(existing_inbox, dict) else None)
+            inbox_changed = inbox_changed or existing_inbox != pending_item
+            inbox_items[request_id] = pending_item
+        if seen_changed:
+            state["last_checked_at"] = now
+            try:
+                _save_inbound_state(state_path, state)
+            except OSError as exc:
+                return {
+                    "success": False,
+                    "kind": "inbound_requests",
+                    "should_notify": True,
+                    "severity": "error",
+                    "text": f"Collaboration inbound request monitor failed to save seen state: {exc}",
+                    "counts": {"new": len(new_items), "open": len(open_items), "seen": len(seen), "pending": len(_pending_inbox_items(inbox))},
+                    "new_items": new_items,
+                    "inbox_path": str(inbox_path),
+                    "error": str(exc),
+                }
+        if inbox_changed:
+            inbox["updated_at"] = now
+            try:
+                _save_inbound_inbox(inbox_path, inbox)
+            except OSError as exc:
+                return {
+                    "success": False,
+                    "kind": "inbound_requests",
+                    "should_notify": True,
+                    "severity": "error",
+                    "text": f"Collaboration inbound request monitor failed to save local inbox: {exc}",
+                    "counts": {"new": len(new_items), "open": len(open_items), "seen": len(seen), "pending": len(_pending_inbox_items(inbox))},
+                    "new_items": new_items,
+                    "inbox_path": str(inbox_path),
+                    "error": str(exc),
+                }
+
+    pending_count = len(_pending_inbox_items(inbox))
+    counts = {"new": len(new_items), "open": len(open_items), "seen": len(seen), "pending": pending_count}
+    if not new_items:
+        return {
+            "success": True,
+            "kind": "inbound_requests",
+            "should_notify": False,
+            "severity": "none",
+            "text": SILENT_MARKER,
+            "counts": counts,
+            "new_items": [],
+            "inbox_path": str(inbox_path),
+        }
+
+    lines = [
+        "New collaboration requests detected",
+        f"Counts: new={counts['new']}, open={counts['open']}, pending={counts['pending']}",
+        "",
+        "New requests:",
+        *_compact_items(new_items),
+        "",
+        "Suggested next action: review pending items with /collab inbox before taking action. No automatic execution was performed.",
+    ]
+    return {
+        "success": True,
+        "kind": "inbound_requests",
+        "should_notify": True,
+        "severity": "medium",
+        "text": "\n".join(lines),
+        "counts": counts,
+        "new_items": new_items,
+        "inbox_path": str(inbox_path),
+    }
+
+
+def read_inbound_inbox(limit: int = 20, config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    monitor_config = {**_monitor_config(), **(config or {})}
+    inbox_path = _inbound_inbox_path(monitor_config)
+    inbox = _load_inbound_inbox(inbox_path)
+    pending_items = _pending_inbox_items(inbox)[: max(1, int(limit or 20))]
+    counts = {"pending": len(_pending_inbox_items(inbox))}
+    if not pending_items:
+        return {
+            "success": True,
+            "kind": "inbound_inbox",
+            "should_notify": False,
+            "severity": "none",
+            "text": "No pending inbound collaboration requests in the local inbox.",
+            "counts": counts,
+            "items": [],
+            "inbox_path": str(inbox_path),
+        }
+
+    lines = [
+        "Pending inbound collaboration requests",
+        f"Counts: pending={counts['pending']}",
+        "",
+        "Pending requests:",
+        *_compact_items(pending_items),
+        "",
+        "Suggested next action: inspect the request details before drafting any collaboration response.",
+    ]
+    return {
+        "success": True,
+        "kind": "inbound_inbox",
+        "should_notify": True,
+        "severity": "info",
+        "text": "\n".join(lines),
+        "counts": counts,
+        "items": pending_items,
+        "inbox_path": str(inbox_path),
     }
 
 
@@ -186,11 +487,11 @@ def run_monitor(
     project: str = "",
     config: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    normalized = (kind or "").strip().lower()
-    if normalized not in _MONITOR_KINDS:
+    normalized = normalize_monitor_kind(kind)
+    if normalized not in MONITOR_KINDS:
         return {
             "success": False,
-            "kind": normalized,
+            "kind": (kind or "").strip().lower(),
             "should_notify": True,
             "severity": "error",
             "text": f"Unsupported collaboration monitor kind: {kind}",
@@ -200,4 +501,6 @@ def run_monitor(
 
     if normalized == "daily_brief":
         return build_daily_brief(limit=limit, project=project)
+    if normalized == "inbound_requests":
+        return detect_inbound_requests(limit=limit, project=project, config=config)
     return evaluate_urgent_alerts(limit=limit, project=project, config=config)

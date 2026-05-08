@@ -109,6 +109,26 @@ class TestCLIQuickCommands:
         args = cli.console.print.call_args[0][0]
         assert "timed out" in args.lower()
 
+    def test_collab_inbox_prints_pending_items(self):
+        cli = self._make_cli({})
+        with patch("hermes_cli.config.load_config", return_value={"collaboration": {"monitor": {"limit": 3}}}), \
+             patch("tools.collaboration_monitor.read_inbound_inbox", return_value={"success": True, "text": "Pending inbound collaboration requests\n- REQ-1: Review"}), \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab inbox")
+
+        assert result is True
+        cprint.assert_called_once_with("Pending inbound collaboration requests\n- REQ-1: Review")
+
+    def test_collab_inbox_prints_empty_message(self):
+        cli = self._make_cli({})
+        with patch("hermes_cli.config.load_config", return_value={"collaboration": {"monitor": {}}}), \
+             patch("tools.collaboration_monitor.read_inbound_inbox", return_value={"success": True, "text": "No pending inbound collaboration requests in the local inbox."}), \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab inbox")
+
+        assert result is True
+        cprint.assert_called_once_with("No pending inbound collaboration requests in the local inbox.")
+
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 
@@ -188,6 +208,45 @@ class TestGatewayQuickCommands:
         assert monitor.call_args.kwargs["config"]["gateway_install_enabled"] is False
 
     @pytest.mark.asyncio
+    async def test_collab_inbox_returns_pending_items_when_gateway_gate_enabled(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner.hooks = MagicMock()
+        runner.hooks.emit = AsyncMock()
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("collab", "inbox")
+        with patch("hermes_cli.commands._is_gateway_available", return_value=True), \
+             patch("hermes_cli.config.load_config", return_value={"collaboration": {"monitor": {"limit": 2}}}), \
+             patch("tools.collaboration_monitor.read_inbound_inbox", return_value={"success": True, "text": "Pending inbound collaboration requests\n- REQ-1: Review"}):
+            result = await runner._handle_message(event)
+
+        assert result == "Pending inbound collaboration requests\n- REQ-1: Review"
+
+    @pytest.mark.asyncio
+    async def test_collab_inbox_returns_empty_message_when_gateway_gate_enabled(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner.hooks = MagicMock()
+        runner.hooks.emit = AsyncMock()
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("collab", "inbox")
+        with patch("hermes_cli.commands._is_gateway_available", return_value=True), \
+             patch("tools.collaboration_monitor.read_inbound_inbox", return_value={"success": True, "text": "No pending inbound collaboration requests in the local inbox."}):
+            result = await runner._handle_message(event)
+
+        assert result == "No pending inbound collaboration requests in the local inbox."
+
+    @pytest.mark.asyncio
     async def test_collab_monitor_install_refused_by_default_from_gateway(self):
         from gateway.run import GatewayRunner
 
@@ -263,7 +322,11 @@ class TestGatewayQuickCommands:
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):
         from gateway.run import GatewayRunner
-        import asyncio
+
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock()
+
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"slow": {"type": "exec", "command": "sleep 100"}}}
         runner._running_agents = {}
@@ -271,8 +334,9 @@ class TestGatewayQuickCommands:
         runner._is_user_authorized = MagicMock(return_value=True)
 
         event = self._make_event("slow")
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
-            result = await runner._handle_message(event)
+        with patch("asyncio.create_subprocess_shell", AsyncMock(return_value=proc)):
+            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+                result = await runner._handle_message(event)
         assert result is not None
         assert "timed out" in result.lower()
 

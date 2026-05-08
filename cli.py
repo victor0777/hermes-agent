@@ -3404,11 +3404,21 @@ class HermesCLI:
     def _handle_collab_command(self, cmd: str):
         """Handle read-only collaboration PM commands."""
         from tools.collaboration_tool import collaboration_tool
+        from tools.collaboration_monitor import read_inbound_inbox
 
         parts = cmd.split()
         subcommand = parts[1].lower() if len(parts) > 1 else "brief"
         if subcommand == "monitor":
             self._handle_collab_monitor_command(parts[2:])
+            return
+        if subcommand == "inbox":
+            from hermes_cli.config import load_config
+
+            config = load_config().get("collaboration", {}).get("monitor", {})
+            if not isinstance(config, dict):
+                config = {}
+            result = read_inbound_inbox(limit=int(config.get("limit") or 20), config=config)
+            _cprint(result.get("text") or result.get("error") or json.dumps(result, ensure_ascii=False, indent=2))
             return
 
         project = parts[2] if len(parts) > 2 and subcommand == "project" else ""
@@ -3423,7 +3433,7 @@ class HermesCLI:
         }
         action = action_map.get(subcommand)
         if not action:
-            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|monitor status|monitor run <daily|urgent>|monitor install <daily|urgent>]")
+            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|monitor status|monitor run <daily|urgent|inbound>|monitor install <daily|urgent|inbound>]")
             return
         if subcommand == "project" and not project:
             _cprint("  Usage: /collab project <name>")
@@ -3446,21 +3456,18 @@ class HermesCLI:
         """Handle deterministic collaboration PM monitor commands."""
         from hermes_cli.config import load_config
         from tools.cronjob_tools import cronjob as cronjob_tool
-        from tools.collaboration_monitor import run_monitor
+        from tools.collaboration_monitor import (
+            DEFAULT_MONITOR_SCHEDULES,
+            MONITOR_SCHEDULE_KEYS,
+            normalize_monitor_kind,
+            run_monitor,
+        )
 
-        usage = "  Usage: /collab monitor status|run <daily|urgent>|install <daily|urgent>"
+        usage = "  Usage: /collab monitor status|run <daily|urgent|inbound>|install <daily|urgent|inbound>"
         action = args[0].lower() if args else "status"
         config = load_config().get("collaboration", {}).get("monitor", {})
         if not isinstance(config, dict):
             config = {}
-
-        def _kind(value: str) -> str | None:
-            normalized = (value or "").strip().lower()
-            if normalized in {"daily", "daily_brief"}:
-                return "daily_brief"
-            if normalized in {"urgent", "urgent_alert"}:
-                return "urgent_alert"
-            return None
 
         if action == "status":
             listing = json.loads(cronjob_tool(action="list", include_disabled=True))
@@ -3472,7 +3479,7 @@ class HermesCLI:
             return
 
         if action == "run" and len(args) >= 2:
-            monitor_kind = _kind(args[1])
+            monitor_kind = normalize_monitor_kind(args[1])
             if not monitor_kind:
                 _cprint(usage)
                 return
@@ -3482,19 +3489,24 @@ class HermesCLI:
                 project=str(config.get("project") or ""),
                 config=config,
             )
-            _cprint(result.get("text") or result.get("error") or json.dumps(result, ensure_ascii=False, indent=2))
+            text = result.get("text") or result.get("error") or json.dumps(result, ensure_ascii=False, indent=2)
+            if monitor_kind == "inbound_requests" and text == "[SILENT]":
+                counts = result.get("counts") or {}
+                text = f"No new collaboration requests. Open requests: {counts.get('open', 0)}. Pending inbox items: {counts.get('pending', 0)}."
+            _cprint(text)
             return
 
         if action == "install" and len(args) >= 2:
-            monitor_kind = _kind(args[1])
+            monitor_kind = normalize_monitor_kind(args[1])
             if not monitor_kind:
                 _cprint(usage)
                 return
-            schedule_key = "daily_schedule" if monitor_kind == "daily_brief" else "urgent_schedule"
+            schedule_key = MONITOR_SCHEDULE_KEYS[monitor_kind]
+            fallback_schedule = DEFAULT_MONITOR_SCHEDULES[monitor_kind]
             result = json.loads(cronjob_tool(
                 action="create_collaboration_monitor",
                 monitor_kind=monitor_kind,
-                schedule=str(config.get(schedule_key) or ("57 8 * * *" if monitor_kind == "daily_brief" else "every 4h")),
+                schedule=str(config.get(schedule_key) or fallback_schedule),
                 deliver=str(config.get("deliver") or "local"),
                 limit=int(config.get("limit") or 20),
                 project=str(config.get("project") or ""),

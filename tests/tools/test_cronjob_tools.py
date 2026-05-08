@@ -224,6 +224,23 @@ class TestScheduleCronjob:
             "project": "hermes-agent",
         }
 
+    def test_create_inbound_collaboration_monitor_job(self):
+        result = json.loads(cronjob(
+            action="create_collaboration_monitor",
+            monitor_kind="inbound_requests",
+            schedule="every 30m",
+            project="hermes-agent",
+            limit=7,
+        ))
+        assert result["success"] is True
+        assert result["type"] == "collaboration_monitor"
+        assert result["monitor_kind"] == "inbound_requests"
+        assert result["job"]["metadata"] == {
+            "monitor_kind": "inbound_requests",
+            "limit": 7,
+            "project": "hermes-agent",
+        }
+
     def test_create_collaboration_monitor_rejects_invalid_kind(self):
         result = json.loads(cronjob(
             action="create_collaboration_monitor",

@@ -5,6 +5,24 @@
 Use Hermes Agent as an always-on project-management assistant for `collaboration.ktl.com`.
 Hermes should not replace Claude Code for repository-local development work. Its role is to monitor collaboration state, surface neglected work, ask for decisions when needed, and prepare low-risk project-management actions for approval.
 
+## Current Status
+
+Delivered capabilities:
+
+- read-only collaboration client/tool for dashboard, requests, blockers, reports, and project summaries
+- `/collab brief` PM summary flow for CLI and guarded gateway use
+- deterministic scheduled monitoring for daily briefs, urgent read-only alerts, and inbound request detection
+- read-only collaboration knowledge and Agent Board search tools
+- local read-only inbox persistence for collaboration requests addressed to `hermes-agent`
+- `/collab inbox` review flow for CLI and guarded gateway use
+
+Current gap:
+
+- Collaboration MCP/REST can create and store requests addressed to `hermes-agent`.
+- Hermes can detect those records, deduplicate notifications, and keep pending local inbox items.
+- Hermes still does not automatically draft, post, close, reassign, reprioritize, or execute repository-local work from those requests.
+- Shared-state writeback and runtime invocation remain future approval-gated phases.
+
 ## User-Level Goal
 
 Create a personal PM/operator agent that continuously watches the cross-project collaboration system and helps keep work moving across many projects.
@@ -215,10 +233,16 @@ Hermes Agent
   ├─ Collaboration API/tool layer
   │   ├─ dashboard read
   │   ├─ request list/read
-  │   ├─ project summary read
-  │   ├─ blocker read
-  │   ├─ report read
-  │   └─ approval-gated write actions
+  │   ├─ knowledge search
+  │   ├─ Agent Board search
+  │   ├─ blocker/report/project read
+  │   └─ future approval-gated write actions
+  ├─ Inbound request bridge
+  │   ├─ detect requests addressed to hermes-agent
+  │   ├─ deduplicate seen request ids
+  │   ├─ persist local pending inbox items
+  │   ├─ surface pending work to the user
+  │   └─ future approval-gated runtime flow
   ├─ Gateway layer
   │   ├─ Telegram DM
   │   ├─ Slack DM/channel
@@ -231,6 +255,8 @@ Hermes Agent
 collaboration.ktl.com
   ├─ project registry
   ├─ requests
+  ├─ Agent Board
+  ├─ knowledge DB / project snapshots
   ├─ reports
   ├─ tasks
   ├─ blockers
@@ -251,7 +277,7 @@ Exit criteria:
 
 - User agrees that Hermes is being built as a PM/operator agent, not a Claude Code replacement.
 
-### Phase 1 — Read-only collaboration client
+### Phase 1 — Read-only collaboration client — delivered
 
 Goal:
 
@@ -306,7 +332,7 @@ Exit criteria:
 - Hermes can produce a raw read-only snapshot from collaboration state.
 - No write endpoints are available through the tool yet.
 
-### Phase 2 — PM analysis layer
+### Phase 2 — PM analysis layer — partially delivered
 
 Goal:
 
@@ -351,7 +377,7 @@ Exit criteria:
 - User can ask Hermes for a useful collaboration brief on demand.
 - Hermes can distinguish “needs user decision” from ordinary stale work.
 
-### Phase 3 — Scheduled monitoring
+### Phase 3 — Scheduled monitoring — delivered
 
 Goal:
 
@@ -408,7 +434,49 @@ Exit criteria:
 - Urgent monitor jobs suppress no-op notifications.
 - Gateway job installation remains disabled by default.
 
-### Phase 4 — Approval-gated write actions
+### Phase 4 — Inbound request bridge — partially delivered
+
+Goal:
+
+Make collaboration requests addressed to `hermes-agent` visible as actionable Hermes work without granting autonomous writeback.
+
+Delivered capabilities:
+
+- poll collaboration requests addressed to `hermes-agent` through the deterministic inbound monitor
+- track seen request ids to avoid duplicate notifications
+- persist open inbound requests as local pending inbox items under Hermes home
+- surface pending inbound requests through `/collab inbox` in CLI and guarded gateway contexts
+- keep preview runs side-effect free with `mark_seen=False`
+
+Remaining capabilities:
+
+- attach relevant collaboration knowledge and Agent Board context to the pending item
+- optionally invoke a constrained Hermes runtime flow after the user chooses to proceed
+
+Initial bridge behavior:
+
+```text
+collaboration request to hermes-agent
+→ bridge detects new or updated request
+→ bridge records local seen state and upserts a pending local inbox item
+→ Hermes surfaces pending work through monitor output or `/collab inbox`
+→ user chooses whether Hermes should draft or perform follow-up
+```
+
+Non-goals for this phase:
+
+- no automatic collaboration response writeback
+- no automatic request close/reassign/priority changes
+- no autonomous repository-local development work
+- no broad project notices without explicit approval
+
+Exit criteria:
+
+- A request addressed to `hermes-agent` is surfaced as a local pending item or notification. — delivered for read-only local inbox
+- The bridge can avoid repeating the same unchanged request. — delivered for seen-state notification suppression
+- Shared-state writeback remains unavailable or explicitly approval-gated. — delivered by keeping this phase read-only
+
+### Phase 5 — Approval-gated write actions — planned
 
 Goal:
 
@@ -465,7 +533,7 @@ Exit criteria:
 - No batch write actions happen without explicit approval.
 - The read-only tool remains usable without write credentials.
 
-### Phase 5 — Limited automation
+### Phase 6 — Limited automation — planned
 
 Goal:
 
@@ -504,8 +572,9 @@ Implement the smallest useful version:
    - blockers
    - user decisions needed
    - suggested next actions
-4. No write actions.
-5. Run from CLI first, then expose through Telegram/Slack gateway.
+4. Add `/collab monitor run inbound` and `/collab inbox` so requests addressed to `hermes-agent` become local pending items.
+5. No write actions.
+6. Run from CLI first, then expose through Telegram/Slack gateway.
 
 ## Success Criteria
 
@@ -525,4 +594,8 @@ Hermes is useful for this role when:
 - Should daily briefs go to Telegram DM, Telegram home channel, Slack, or CLI only?
 - What SLA thresholds define overdue/stale by default?
 - Which projects should be included in the first rollout?
+- Should the inbound request bridge eventually consume Agent Board entries or use a future webhook/event source instead of polling collaboration REST?
+- Should local inbox items stay JSON-backed under Hermes home, or move into Hermes state DB once approval-gated actions exist?
+- What local pending-action shape is needed before an inbox item can invoke Hermes on approval?
+- What exact approval flow is required before Hermes posts a response back to collaboration?
 - Should write actions use direct REST calls or a collaboration-specific Hermes tool wrapper?

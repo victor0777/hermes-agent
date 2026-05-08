@@ -1,6 +1,13 @@
 import json
 
-from tools.collaboration_monitor import SILENT_MARKER, build_daily_brief, evaluate_urgent_alerts, run_monitor
+from tools.collaboration_monitor import (
+    SILENT_MARKER,
+    build_daily_brief,
+    detect_inbound_requests,
+    evaluate_urgent_alerts,
+    read_inbound_inbox,
+    run_monitor,
+)
 
 
 def _payload(success=True, data=None, text=None, error=None):
@@ -101,6 +108,171 @@ class TestCollaborationMonitor:
         assert result["should_notify"] is True
         assert "HTTP 500" in result["text"]
         assert result["text"] != SILENT_MARKER
+
+    def test_inbound_monitor_reports_first_seen_open_requests(self, monkeypatch, tmp_path):
+        state_path = tmp_path / "seen.json"
+        inbox_path = tmp_path / "inbox.json"
+
+        def fake_tool(**kwargs):
+            assert kwargs == {"action": "list_requests", "project": "hermes-agent", "status": "open", "limit": 7}
+            return _payload(data=[{"request_id": "REQ-1", "title": "Needs review", "priority": "medium"}])
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+
+        result = detect_inbound_requests(
+            limit=7,
+            project="hermes-agent",
+            config={"inbound_state_path": str(state_path), "inbound_inbox_path": str(inbox_path)},
+        )
+
+        assert result["success"] is True
+        assert result["should_notify"] is True
+        assert result["counts"] == {"new": 1, "open": 1, "seen": 1, "pending": 1}
+        assert result["new_items"][0]["_inbound_id"] == "REQ-1"
+        assert "Needs review" in result["text"]
+        assert "REQ-1" in state_path.read_text()
+        inbox = json.loads(inbox_path.read_text())
+        assert inbox["items"]["REQ-1"]["status"] == "pending"
+        assert inbox["items"]["REQ-1"]["title"] == "Needs review"
+
+    def test_inbound_monitor_suppresses_duplicate_requests(self, monkeypatch, tmp_path):
+        state_path = tmp_path / "seen.json"
+        inbox_path = tmp_path / "inbox.json"
+
+        def fake_tool(**kwargs):
+            return _payload(data=[{"request_id": "REQ-1", "title": "Needs review"}])
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+        config = {"inbound_state_path": str(state_path), "inbound_inbox_path": str(inbox_path)}
+
+        first = detect_inbound_requests(config=config)
+        second = detect_inbound_requests(config=config)
+
+        assert first["should_notify"] is True
+        assert second["success"] is True
+        assert second["should_notify"] is False
+        assert second["text"] == SILENT_MARKER
+        assert second["counts"] == {"new": 0, "open": 1, "seen": 1, "pending": 1}
+        assert list(json.loads(inbox_path.read_text())["items"]) == ["REQ-1"]
+
+    def test_inbound_monitor_reports_only_new_request(self, monkeypatch, tmp_path):
+        state_path = tmp_path / "seen.json"
+        inbox_path = tmp_path / "inbox.json"
+        state_path.write_text('{"version": 1, "seen": {"REQ-1": {"first_seen_at": "2026-05-08T00:00:00Z"}}}')
+
+        def fake_tool(**kwargs):
+            return _payload(data=[
+                {"request_id": "REQ-1", "title": "Old request"},
+                {"request_id": "REQ-2", "title": "New request", "priority": "high"},
+            ])
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+
+        result = detect_inbound_requests(config={"inbound_state_path": str(state_path), "inbound_inbox_path": str(inbox_path)})
+
+        assert result["should_notify"] is True
+        assert [item["_inbound_id"] for item in result["new_items"]] == ["REQ-2"]
+        assert "New request" in result["text"]
+        assert "Old request" not in result["text"]
+        assert set(json.loads(inbox_path.read_text())["items"]) == {"REQ-1", "REQ-2"}
+
+    def test_inbound_monitor_api_failure_does_not_write_state(self, monkeypatch, tmp_path):
+        state_path = tmp_path / "seen.json"
+        inbox_path = tmp_path / "inbox.json"
+
+        def fake_tool(**kwargs):
+            return _payload(success=False, error="HTTP 500")
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+
+        result = detect_inbound_requests(config={"inbound_state_path": str(state_path), "inbound_inbox_path": str(inbox_path)})
+
+        assert result["success"] is False
+        assert "HTTP 500" in result["text"]
+        assert not state_path.exists()
+        assert not inbox_path.exists()
+
+    def test_inbound_monitor_preview_does_not_write_state(self, monkeypatch, tmp_path):
+        state_path = tmp_path / "seen.json"
+        inbox_path = tmp_path / "inbox.json"
+
+        def fake_tool(**kwargs):
+            return _payload(data=[{"request_id": "REQ-1", "title": "Preview request"}])
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+
+        result = detect_inbound_requests(
+            config={"inbound_state_path": str(state_path), "inbound_inbox_path": str(inbox_path)},
+            mark_seen=False,
+        )
+
+        assert result["success"] is True
+        assert result["should_notify"] is True
+        assert result["counts"] == {"new": 1, "open": 1, "seen": 0, "pending": 0}
+        assert not state_path.exists()
+        assert not inbox_path.exists()
+
+    def test_run_monitor_dispatches_inbound_requests(self, monkeypatch, tmp_path):
+        state_path = tmp_path / "seen.json"
+        inbox_path = tmp_path / "inbox.json"
+
+        def fake_tool(**kwargs):
+            return _payload(data=[{"request_id": "REQ-1", "title": "Inbound"}])
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+
+        result = run_monitor("inbound_requests", config={"inbound_state_path": str(state_path), "inbound_inbox_path": str(inbox_path)})
+
+        assert result["success"] is True
+        assert result["kind"] == "inbound_requests"
+        assert result["should_notify"] is True
+
+    def test_read_inbound_inbox_returns_pending_items(self, tmp_path):
+        inbox_path = tmp_path / "inbox.json"
+        inbox_path.write_text(json.dumps({
+            "version": 1,
+            "items": {
+                "REQ-1": {"id": "REQ-1", "request_id": "REQ-1", "title": "Pending review", "status": "pending", "last_seen_at": "2026-05-08T01:00:00Z"},
+                "REQ-2": {"id": "REQ-2", "request_id": "REQ-2", "title": "Done", "status": "done", "last_seen_at": "2026-05-08T02:00:00Z"},
+            },
+        }))
+
+        result = read_inbound_inbox(config={"inbound_inbox_path": str(inbox_path)})
+
+        assert result["success"] is True
+        assert result["counts"] == {"pending": 1}
+        assert [item["id"] for item in result["items"]] == ["REQ-1"]
+        assert "Pending review" in result["text"]
+
+    def test_read_inbound_inbox_returns_empty_message(self, tmp_path):
+        result = read_inbound_inbox(config={"inbound_inbox_path": str(tmp_path / "missing.json")})
+
+        assert result["success"] is True
+        assert result["items"] == []
+        assert "No pending inbound" in result["text"]
+
+    def test_inbound_monitor_inbox_save_failure_returns_error(self, monkeypatch, tmp_path):
+        state_path = tmp_path / "seen.json"
+        inbox_path = tmp_path / "inbox.json"
+
+        def fake_tool(**kwargs):
+            return _payload(data=[{"request_id": "REQ-1", "title": "Cannot save"}])
+
+        def fail_save(path, payload, **kwargs):
+            if path == inbox_path:
+                raise OSError("disk full")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload))
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+        monkeypatch.setattr("tools.collaboration_monitor.atomic_json_write", fail_save)
+
+        result = detect_inbound_requests(config={"inbound_state_path": str(state_path), "inbound_inbox_path": str(inbox_path)})
+
+        assert result["success"] is False
+        assert "local inbox" in result["text"]
+        assert "disk full" in result["error"]
+        assert result["counts"] == {"new": 1, "open": 1, "seen": 1, "pending": 1}
 
     def test_unknown_monitor_kind_is_rejected(self):
         result = run_monitor("write_actions")
