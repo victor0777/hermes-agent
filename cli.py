@@ -3411,6 +3411,9 @@ class HermesCLI:
         if subcommand == "monitor":
             self._handle_collab_monitor_command(parts[2:])
             return
+        if subcommand == "respond":
+            self._handle_collab_respond_command(cmd)
+            return
         if subcommand == "inbox":
             from hermes_cli.config import load_config
 
@@ -3433,7 +3436,7 @@ class HermesCLI:
         }
         action = action_map.get(subcommand)
         if not action:
-            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|monitor status|monitor run <daily|urgent|inbound>|monitor install <daily|urgent|inbound>]")
+            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|monitor status|monitor run <daily|urgent|inbound>|monitor install <daily|urgent|inbound>]")
             return
         if subcommand == "project" and not project:
             _cprint("  Usage: /collab project <name>")
@@ -3451,6 +3454,111 @@ class HermesCLI:
             _cprint(f"  Collaboration request failed: {result.get('error', 'unknown error')}")
             return
         _cprint(json.dumps(result.get("data"), ensure_ascii=False, indent=2))
+
+    def _handle_collab_respond_command(self, cmd: str):
+        """Handle approval-gated collaboration response commands."""
+        from tools.collaboration_responses import (
+            draft_collaboration_response,
+            get_collaboration_response_draft,
+            list_collaboration_response_drafts,
+            post_collaboration_response,
+        )
+
+        usage = "  Usage: /collab respond draft <request_id> <response text>|list|show <action_id>|post <action_id>"
+        prefix = "/collab respond"
+        remainder = cmd[len(prefix):].strip() if cmd.strip().lower().startswith(prefix) else ""
+        parts = remainder.split(maxsplit=2)
+        action = parts[0].lower() if parts else "list"
+
+        if action == "draft":
+            if len(parts) < 3:
+                _cprint("  Usage: /collab respond draft <request_id> <response text>")
+                return
+            result = draft_collaboration_response(parts[1], parts[2])
+            if not result.get("success"):
+                _cprint(f"  Failed to draft collaboration response: {result.get('error', 'unknown error')}")
+                return
+            draft = result["draft"]
+            _cprint(
+                "Drafted collaboration response.\n\n"
+                f"Action ID: {draft['action_id']}\n"
+                f"Request ID: {draft['request_id']}\n\n"
+                "Exact response to post:\n---\n"
+                f"{draft['body']}\n"
+                "---\n\n"
+                "No network write was performed.\n"
+                f"To post: /collab respond post {draft['action_id']}"
+            )
+            return
+
+        if action == "list":
+            result = list_collaboration_response_drafts()
+            if not result.get("success"):
+                _cprint(f"  Failed to list collaboration response drafts: {result.get('error', 'unknown error')}")
+                return
+            drafts = result.get("drafts") or []
+            if not drafts:
+                _cprint("No collaboration response drafts in the local outbox.")
+                return
+            lines = ["Local collaboration response drafts"]
+            for draft in drafts:
+                body = str(draft.get("body") or "").splitlines()[0][:80]
+                lines.append(
+                    f"- {draft.get('action_id')} [{draft.get('status', 'draft')}] "
+                    f"{draft.get('request_id')}: {body}"
+                )
+            _cprint("\n".join(lines))
+            return
+
+        if action == "show":
+            if len(parts) < 2:
+                _cprint("  Usage: /collab respond show <action_id>")
+                return
+            result = get_collaboration_response_draft(parts[1])
+            if not result.get("success"):
+                _cprint(f"  {result.get('error', 'unknown error')}")
+                return
+            draft = result["draft"]
+            _cprint(
+                f"Action ID: {draft.get('action_id')}\n"
+                f"Request ID: {draft.get('request_id')}\n"
+                f"Status: {draft.get('status', 'draft')}\n\n"
+                "Exact response:\n---\n"
+                f"{draft.get('body') or ''}\n"
+                "---"
+            )
+            return
+
+        if action == "post":
+            if len(parts) < 2:
+                _cprint("  Usage: /collab respond post <action_id>")
+                return
+            action_id = parts[1].strip()
+            result = get_collaboration_response_draft(action_id)
+            if not result.get("success"):
+                _cprint(f"  {result.get('error', 'unknown error')}")
+                return
+            draft = result["draft"]
+            _cprint(
+                "About to post collaboration response.\n\n"
+                f"Action ID: {draft.get('action_id')}\n"
+                f"Request ID: {draft.get('request_id')}\n\n"
+                "Exact response to post:\n---\n"
+                f"{draft.get('body') or ''}\n"
+                "---"
+            )
+            typed = input(f"Type action ID '{action_id}' to post this collaboration response: ").strip()
+            if typed != action_id:
+                _cprint("Collaboration response post denied. No network write was performed.")
+                return
+            post_result = post_collaboration_response(action_id)
+            if not post_result.get("success"):
+                _cprint(f"  Failed to post collaboration response: {post_result.get('error') or (post_result.get('result') or {}).get('error') or 'unknown error'}")
+                return
+            _cprint(f"Posted collaboration response for {draft.get('request_id')} with action ID {action_id}.")
+            return
+
+        _cprint(usage)
 
     def _handle_collab_monitor_command(self, args: list[str]):
         """Handle deterministic collaboration PM monitor commands."""

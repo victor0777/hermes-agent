@@ -3465,6 +3465,8 @@ class GatewayRunner:
         subcommand = parts[0].lower() if parts else "brief"
         if subcommand == "monitor":
             return await self._handle_collab_monitor_command(parts[1:])
+        if subcommand == "respond":
+            return "Posting collaboration responses is CLI-only in the approval-gated rollout. Use /collab respond draft and /collab respond post from the local CLI."
         if subcommand == "inbox":
             from hermes_cli.config import load_config
 
@@ -3486,7 +3488,7 @@ class GatewayRunner:
         }
         action = action_map.get(subcommand)
         if not action:
-            return "Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|monitor status|monitor run <daily|urgent|inbound>]"
+            return "Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|monitor status|monitor run <daily|urgent|inbound>]"
         if subcommand == "project" and not project:
             return "Usage: /collab project <name>"
 

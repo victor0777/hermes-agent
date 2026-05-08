@@ -9,8 +9,8 @@
 - [x] Document the collaboration-triggered execution gap and next bridge milestones.
 - [x] Design the first inbound collaboration request bridge for requests addressed to `hermes-agent`.
 - [x] Surface inbound Hermes-targeted requests as local pending inbox items with deduplicated notifications.
-- [ ] Add an approval-gated flow for drafting and posting collaboration responses. ← **current**
-- [ ] Evaluate limited automation only after repeated successful approval-gated operation.
+- [x] Add an approval-gated flow for drafting and posting collaboration responses.
+- [ ] Evaluate limited automation only after repeated successful approval-gated operation. ← **current**
 
 ## Quality and operations
 

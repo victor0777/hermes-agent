@@ -129,6 +129,64 @@ class TestCLIQuickCommands:
         assert result is True
         cprint.assert_called_once_with("No pending inbound collaboration requests in the local inbox.")
 
+    def test_collab_respond_draft_prints_action_id_and_body(self):
+        cli = self._make_cli({})
+        draft = {
+            "action_id": "collab-act-1",
+            "request_id": "REQ-1",
+            "body": "Looks good",
+            "status": "draft",
+        }
+        with patch("tools.collaboration_responses.draft_collaboration_response", return_value={"success": True, "draft": draft}) as draft_response, \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab respond draft REQ-1 Looks good")
+
+        assert result is True
+        draft_response.assert_called_once_with("REQ-1", "Looks good")
+        printed = cprint.call_args.args[0]
+        assert "collab-act-1" in printed
+        assert "Looks good" in printed
+        assert "No network write" in printed
+
+    def test_collab_respond_list_prints_drafts(self):
+        cli = self._make_cli({})
+        with patch("tools.collaboration_responses.list_collaboration_response_drafts", return_value={
+            "success": True,
+            "drafts": [{"action_id": "collab-act-1", "request_id": "REQ-1", "body": "Looks good", "status": "draft"}],
+        }), patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab respond list")
+
+        assert result is True
+        printed = cprint.call_args.args[0]
+        assert "collab-act-1" in printed
+        assert "REQ-1" in printed
+
+    def test_collab_respond_post_denies_wrong_action_id(self):
+        cli = self._make_cli({})
+        draft = {"action_id": "collab-act-1", "request_id": "REQ-1", "body": "Looks good", "status": "draft"}
+        with patch("tools.collaboration_responses.get_collaboration_response_draft", return_value={"success": True, "draft": draft}), \
+             patch("tools.collaboration_responses.post_collaboration_response") as post_response, \
+             patch("builtins.input", return_value="wrong"), \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab respond post collab-act-1")
+
+        assert result is True
+        post_response.assert_not_called()
+        assert "No network write" in cprint.call_args.args[0]
+
+    def test_collab_respond_post_accepts_exact_action_id(self):
+        cli = self._make_cli({})
+        draft = {"action_id": "collab-act-1", "request_id": "REQ-1", "body": "Looks good", "status": "draft"}
+        with patch("tools.collaboration_responses.get_collaboration_response_draft", return_value={"success": True, "draft": draft}), \
+             patch("tools.collaboration_responses.post_collaboration_response", return_value={"success": True, "draft": {**draft, "status": "posted"}}) as post_response, \
+             patch("builtins.input", return_value="collab-act-1"), \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab respond post collab-act-1")
+
+        assert result is True
+        post_response.assert_called_once_with("collab-act-1")
+        assert "Posted collaboration response" in cprint.call_args.args[0]
+
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 
@@ -245,6 +303,26 @@ class TestGatewayQuickCommands:
             result = await runner._handle_message(event)
 
         assert result == "No pending inbound collaboration requests in the local inbox."
+
+    @pytest.mark.asyncio
+    async def test_collab_respond_refused_from_gateway(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner.hooks = MagicMock()
+        runner.hooks.emit = AsyncMock()
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("collab", "respond post collab-act-1")
+        with patch("hermes_cli.commands._is_gateway_available", return_value=True), \
+             patch("tools.collaboration_responses.post_collaboration_response") as post_response:
+            result = await runner._handle_message(event)
+
+        assert "cli-only" in result.lower()
+        post_response.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_collab_monitor_install_refused_by_default_from_gateway(self):
