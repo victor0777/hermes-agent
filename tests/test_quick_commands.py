@@ -190,6 +190,36 @@ class TestCLIQuickCommands:
         )
         assert "Posted collaboration response" in cprint.call_args.args[0]
 
+    def test_collab_pm_digest_prints_digest_text(self):
+        cli = self._make_cli({})
+        with patch("hermes_cli.config.load_config", return_value={"collaboration": {"monitor": {"limit": 7}}}), \
+             patch("tools.collaboration_monitor.build_pm_digest", return_value={"success": True, "text": "Routing/telemetry PM digest"}) as digest, \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab pm digest llm-gateway llm-routing-telemetry")
+
+        assert result is True
+        digest.assert_called_once_with(projects=["llm-gateway", "llm-routing-telemetry"], limit=7)
+        cprint.assert_called_once_with("Routing/telemetry PM digest")
+
+    def test_collab_pm_digest_uses_defaults_without_projects(self):
+        cli = self._make_cli({})
+        with patch("hermes_cli.config.load_config", return_value={"collaboration": {"monitor": {}}}), \
+             patch("tools.collaboration_monitor.build_pm_digest", return_value={"success": True, "text": "Default digest"}) as digest, \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab pm digest")
+
+        assert result is True
+        digest.assert_called_once_with(projects=[], limit=50)
+        cprint.assert_called_once_with("Default digest")
+
+    def test_collab_pm_unknown_subcommand_prints_usage(self):
+        cli = self._make_cli({})
+        with patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab pm nope")
+
+        assert result is True
+        assert "Usage: /collab pm digest" in cprint.call_args.args[0]
+
     def test_collab_autonomy_log_prints_local_only_message(self):
         cli = self._make_cli({})
         event = {"id": "evt-1", "category": "Detection", "event": "monitor_run"}

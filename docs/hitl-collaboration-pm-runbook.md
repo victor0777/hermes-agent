@@ -15,6 +15,8 @@ This runbook does not authorize autonomous shared-state writes. Collaboration re
 | Daily | Review collaboration PM brief | `/collab monitor run daily` |
 | After handling a request | Review KPI state | `/collab autonomy kpis` |
 | Daily or before autonomy discussion | Evaluate readiness gate | `/collab autonomy gate` |
+| Daily | Review `llm-gateway` / `llm-routing-telemetry` coordination state | Read collaboration project summaries and open requests; draft responses only after human review. |
+| Weekly or before Paperclip work | Review `paperclip` control-plane coordination state | Check project summary, missing report/request state, upstream/downstream dependencies, and dashboard/agent-ops follow-ups. |
 
 Recommended monitor installation commands:
 
@@ -83,6 +85,84 @@ Manual evidence is still required for information Hermes cannot infer from local
 
 Detection coverage cannot pass unless actual target requests are logged explicitly.
 
+## Gateway and telemetry coordination
+
+Hermes should also operate as a HITL PM assistant for the related `llm-gateway` and `llm-routing-telemetry` projects.
+
+Scope for this operating loop:
+
+- watch open and in-progress requests involving `llm-gateway` and `llm-routing-telemetry`
+- summarize stale requests, blockers, missing acknowledgements, and cross-project dependencies
+- draft low-risk coordination responses for human approval
+- surface security, infrastructure, priority, ownership, or high-priority items as escalation-required
+- never close, reassign, reprioritize, change infrastructure, or post broad notices autonomously
+
+Initial operating targets:
+
+| Target | Purpose |
+|---|---|
+| `llm-gateway` project summary | Identify routing/coordination blockers and outgoing requests needing follow-up. |
+| `llm-routing-telemetry` project summary | Identify telemetry blockers and incoming gateway dependencies. |
+| Requests from `llm-gateway` | Track open coordination, broadcast, security-review, and telemetry requests. |
+| Requests from `llm-routing-telemetry` | Track open telemetry follow-ups to `agents`, `auto_researcher`, `codex-openai`, and gateway. |
+
+Candidate future automation:
+
+```text
+/collab monitor run routing
+/collab pm digest llm-gateway llm-routing-telemetry
+```
+
+Until those commands exist, perform the checks through collaboration project summaries and request lists, then use the normal response draft/post workflow. Treat all gateway and telemetry automation as HITL evidence collection, not as authorization for autonomous shared-state writes.
+
+## Paperclip control-plane coordination
+
+Hermes should also consider `paperclip` as a future HITL PM integration target because Paperclip is an agent-company control plane, not just a dashboard target. It orchestrates agents, issues, projects, routines, and agent-operations views through the Paperclip dashboard.
+
+Current collaboration registry baseline:
+
+- project: `paperclip`
+- lifecycle: active
+- server: `par02`
+- phase: Agent operations + knowledge graph + chat interface
+- upstream: `collaboration`, `autonoma-orchestrator`
+- downstream: `4d-gaussian-splatting`, `video-inpainting`
+- current open incoming/outgoing requests: none in collaboration registry
+- current report freshness: unknown
+
+Observed Paperclip operating context:
+
+- Paperclip has operated company-style agents such as PM, CEO, research, and security roles.
+- Paperclip has operated routines such as 4DGS training watchdogs, campaign loops, ops log collection, vLLM/LMCache release monitoring, and daily stability reporting.
+- Paperclip has depended on local LLM routing through Claude-compatible adapters, LiteLLM, and qwen-family backends, with prior content-format and tool-use compatibility issues.
+- Paperclip is therefore a candidate place to register Hermes as a PM/ops agent, but that registration must start read-only and HITL-gated.
+
+Initial HITL operating scope:
+
+- bootstrap Paperclip collaboration hygiene by checking for missing reports, stale status, and absent open request context
+- summarize upstream/downstream coordination needs involving `collaboration`, `autonoma-orchestrator`, `4d-gaussian-splatting`, and `video-inpainting`
+- generate Paperclip routine health and agent stall/failure digests from read-only state
+- watch local LLM, LiteLLM, Claude-compatible adapter, and tool-use compatibility issues that can block Paperclip agents
+- draft low-risk Paperclip status/update reports for human approval
+- keep actual Paperclip project execution, agent orchestration, issue mutation, dashboard mutation, and report posting outside Hermes autonomy unless separately approved
+
+Candidate staged integration:
+
+1. Read-only discovery: Hermes reads Paperclip project, routine, agent, and collaboration state and creates local PM digests only.
+2. Paperclip agent registration: Paperclip may register a `Hermes-PM` or `Hermes-Ops` agent identity whose first responsibility is read-only digest/report preparation.
+3. Approval-gated report bridge: Hermes drafts Paperclip or collaboration reports, and a human approves the exact report/action ID before any shared-state write.
+
+Candidate future automation:
+
+```text
+/collab pm digest paperclip
+/collab monitor run paperclip
+/collab paperclip report draft
+/collab paperclip report post <action_id>
+```
+
+Until those commands exist, treat Paperclip integration as a coordination-planning item. Hermes may collect local HITL evidence and draft coordination updates, but must not mutate Paperclip issues, agents, dashboards, reports, or downstream project state autonomously.
+
 ## KPI and gate interpretation
 
 Use:
@@ -134,4 +214,8 @@ Not allowed in HITL operation:
 - [ ] Log `Detection actual_target_request` for confirmed Hermes-targeted requests.
 - [ ] Run `/collab autonomy kpis` after handling requests.
 - [ ] Run `/collab autonomy gate` before any autonomy-readiness discussion.
+- [ ] Review `llm-gateway` and `llm-routing-telemetry` summaries for stale requests, blockers, and missing acknowledgements.
+- [ ] Draft only low-risk gateway/telemetry coordination responses; escalate security, infrastructure, priority, ownership, and high-priority items.
+- [ ] Review `paperclip` summary for missing report status, absent request context, and upstream/downstream coordination needs.
+- [ ] Treat Paperclip dashboard/agent/issue mutations as out of scope for Hermes autonomy unless separately approved.
 - [ ] Treat any hard fail as a stop condition for autonomy progression.

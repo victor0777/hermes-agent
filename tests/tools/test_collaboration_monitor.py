@@ -5,6 +5,7 @@ from tools import collaboration_responses as responses
 from tools.collaboration_monitor import (
     SILENT_MARKER,
     build_daily_brief,
+    build_pm_digest,
     detect_inbound_requests,
     evaluate_urgent_alerts,
     read_inbound_inbox,
@@ -213,6 +214,84 @@ class TestCollaborationMonitor:
         assert result["counts"] == {"new": 1, "open": 1, "seen": 0, "pending": 0}
         assert not state_path.exists()
         assert not inbox_path.exists()
+
+    def test_pm_digest_filters_related_items_and_counts_signals(self, monkeypatch):
+        calls = []
+
+        def fake_tool(**kwargs):
+            calls.append(kwargs)
+            if kwargs["action"] == "list_requests":
+                return _payload(data=[
+                    {"request_id": "REQ-1", "from_project": "llm-gateway", "to_project": "llm-routing-telemetry", "title": "Telemetry needed", "priority": "high", "age_days": 4},
+                    {"request_id": "REQ-2", "from_project": "unrelated", "to_project": "other", "title": "Ignore this", "priority": "high", "age_days": 9},
+                    {"request_id": "REQ-3", "from_project": "agents", "to_project": "auto_researcher", "title": "llm-routing-telemetry continuation", "updated_age_days": 2},
+                ])
+            if kwargs["action"] == "overdue_requests":
+                return _payload(data=[
+                    {"request_id": "REQ-4", "from_project": "llm-gateway", "to_project": "auto_researcher", "title": "Overdue continuation"},
+                    {"request_id": "REQ-5", "from_project": "other", "title": "Unrelated overdue"},
+                ])
+            if kwargs["action"] == "blockers":
+                return _payload(data=[{"request_id": "REQ-6", "body": "llm-routing-telemetry blocker"}])
+            if kwargs["action"] == "project_summary":
+                return _payload(data={"phase": f"{kwargs['project']} phase", "blocker_count": 0})
+            raise AssertionError(kwargs)
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+
+        result = build_pm_digest(["llm-gateway", "llm-routing-telemetry"], limit=9)
+
+        assert result["success"] is True
+        assert result["kind"] == "pm_digest"
+        assert result["counts"] == {"open": 2, "high_priority": 1, "overdue": 1, "blockers": 1, "stale": 2, "project_summaries_failed": 0}
+        assert result["severity"] == "high"
+        assert "Telemetry needed" in result["text"]
+        assert "llm-routing-telemetry continuation" in result["text"]
+        assert "Ignore this" not in result["text"]
+        assert calls[0] == {"action": "list_requests", "status": "open", "limit": 9}
+        assert {call["action"] for call in calls} == {"list_requests", "overdue_requests", "blockers", "project_summary"}
+
+    def test_pm_digest_stale_requires_explicit_age_fields(self, monkeypatch):
+        def fake_tool(**kwargs):
+            if kwargs["action"] == "list_requests":
+                return _payload(data=[{"request_id": "REQ-1", "from_project": "llm-gateway", "title": "Old-looking title"}])
+            if kwargs["action"] in {"overdue_requests", "blockers"}:
+                return _payload(data=[])
+            if kwargs["action"] == "project_summary":
+                return _payload(data={"phase": "ok"})
+            raise AssertionError(kwargs)
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+
+        result = build_pm_digest(["llm-gateway"])
+
+        assert result["counts"]["open"] == 1
+        assert result["counts"]["stale"] == 0
+        assert result["severity"] == "info"
+
+    def test_pm_digest_partial_failures_include_warning_text(self, monkeypatch):
+        def fake_tool(**kwargs):
+            if kwargs["action"] == "list_requests":
+                return _payload(data=[{"request_id": "REQ-1", "from_project": "llm-gateway", "title": "Open item"}])
+            if kwargs["action"] == "overdue_requests":
+                return _payload(success=False, error="HTTP 500")
+            if kwargs["action"] == "blockers":
+                return _payload(data=[])
+            if kwargs["action"] == "project_summary":
+                return _payload(success=False, error="summary down")
+            raise AssertionError(kwargs)
+
+        monkeypatch.setattr("tools.collaboration_monitor.collaboration_tool", fake_tool)
+
+        result = build_pm_digest(["llm-gateway"])
+
+        assert result["success"] is False
+        assert result["severity"] == "error"
+        assert result["counts"]["open"] == 1
+        assert result["counts"]["project_summaries_failed"] == 1
+        assert "HTTP 500" in result["text"]
+        assert "summary down" in result["text"]
+        assert "Safety: read-only digest" in result["text"]
 
     def test_run_monitor_dispatches_inbound_requests(self, monkeypatch, tmp_path):
         state_path = tmp_path / "seen.json"

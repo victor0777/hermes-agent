@@ -3465,6 +3465,8 @@ class GatewayRunner:
         subcommand = parts[0].lower() if parts else "brief"
         if subcommand == "monitor":
             return await self._handle_collab_monitor_command(parts[1:])
+        if subcommand == "pm":
+            return await self._handle_collab_pm_command(parts[1:])
         if subcommand == "respond":
             return "Posting collaboration responses is CLI-only in the approval-gated rollout. Use /collab respond draft and /collab respond post from the local CLI."
         if subcommand == "inbox":
@@ -3488,7 +3490,7 @@ class GatewayRunner:
         }
         action = action_map.get(subcommand)
         if not action:
-            return "Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|monitor status|monitor run <daily|urgent|inbound>]"
+            return "Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|pm digest [project ...]|monitor status|monitor run <daily|urgent|inbound>]"
         if subcommand == "project" and not project:
             return "Usage: /collab project <name>"
 
@@ -3502,6 +3504,25 @@ class GatewayRunner:
         if not result.get("success"):
             return f"Collaboration request failed: {result.get('error', 'unknown error')}"
         return json.dumps(result.get("data"), ensure_ascii=False, indent=2)
+
+    async def _handle_collab_pm_command(self, args: list[str]) -> str:
+        """Handle read-only collaboration PM digest commands from gateway."""
+        from hermes_cli.config import load_config
+        from tools.collaboration_monitor import build_pm_digest
+
+        usage = "Usage: /collab pm digest [project ...]"
+        action = args[0].lower() if args else "digest"
+        if action != "digest":
+            return usage
+
+        config = load_config().get("collaboration", {}).get("monitor", {})
+        if not isinstance(config, dict):
+            config = {}
+        result = build_pm_digest(
+            projects=args[1:],
+            limit=int(config.get("limit") or 50),
+        )
+        return result.get("text") or result.get("error") or json.dumps(result, ensure_ascii=False, indent=2)
 
     async def _handle_collab_monitor_command(self, args: list[str]) -> str:
         """Handle deterministic collaboration PM monitor commands from gateway."""

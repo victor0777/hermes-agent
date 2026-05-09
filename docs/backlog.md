@@ -23,3 +23,51 @@
 - Add observability and acceptance checks.
   - Log bridge detections and skipped duplicates.
   - Smoke test: create request to `hermes-agent`, verify Hermes surfaces it once, approve a draft, then post response in a later write-enabled phase.
+
+## Paperclip PM/ops agent integration
+
+- Define the Paperclip integration contract for registering Hermes as a PM/ops agent.
+  - Candidate identities: `Hermes-PM` or `Hermes-Ops`.
+  - Initial capability scope: read-only project, agent, routine, issue, and report-state inspection.
+  - Explicitly exclude Paperclip issue mutation, agent orchestration, dashboard mutation, report posting, and downstream project writes until separately approved.
+- Design a read-only Paperclip PM digest.
+  - Summarize Paperclip report freshness, absent request context, upstream/downstream blockers, routine health, and agent stall/failure signals.
+  - Include local LLM, LiteLLM, Claude-compatible adapter, and tool-use compatibility regressions when they block Paperclip agents.
+  - Keep digest output local unless a human approves a report bridge action.
+- Design an approval-gated Paperclip report bridge.
+  - Draft Paperclip or collaboration reports with stable action IDs.
+  - Reuse exact action-ID approval before any shared-state write.
+  - Record local autonomy evidence for draft, approval, write, failure, and safety events.
+- Define acceptance checks before implementation.
+  - Read-only digest can be generated without mutating Paperclip or collaboration state.
+  - Denied report drafts leave no shared-state writes.
+  - Approved report posts are idempotent and traceable by action ID.
+  - Any attempted dashboard, issue, agent, priority, ownership, or downstream mutation is treated as out of scope and escalated.
+
+## Routing and telemetry PM coordination
+
+- Add a read-only gateway/telemetry coordination digest.
+  - Track open requests between `llm-gateway`, `llm-routing-telemetry`, `agents`, `auto_researcher`, and `codex-openai`.
+  - Summarize stale requests, missing acknowledgements, blocker state, owner handoffs, and due dates.
+  - Keep output local unless a human approves a collaboration response draft.
+- Track context-guard telemetry integration as a coordination item.
+  - Source request: `REQ-20260509-001` from `llm-gateway` to `llm-routing-telemetry`.
+  - PM concern: ensure Layer 1/2 context guard canary telemetry gets ingested into weekly reports or dashboards before Layer 3 rolling digest decisions.
+  - Watch for required dimensions and metrics: project, host, lane, backend profile, tool, rule ID, action, compression counts, saved bytes/tokens, and false-positive notes.
+- Track compression telemetry and continuation-guard requests as coordination items.
+  - `REQ-20260507-001`: `llm-gateway` → `llm-routing-telemetry`, context compression `PostToolUse` JSONL ingest/reporting; currently first-response overdue.
+  - `REQ-20260427-007`: `llm-gateway` → `auto_researcher`, operator continuation marker injection, progress-detection rules, and telemetry events; currently overdue.
+  - `REQ-20260427-015`: `llm-gateway` → `auto_researcher`, transcript-size guard and continuation telemetry; currently overdue.
+  - `REQ-20260427-006`: `llm-routing-telemetry` → `agents`, llm-gateway founding split announcement and migration coordination; treat as background context unless owner asks for Hermes help.
+- Define Hermes PM handling behavior for cross-project requests.
+  - Identify overdue or missing-ack requests and prepare coordination summaries for the user.
+  - Draft follow-up text only when the request is low-risk and the owner/project boundary is clear.
+  - Do not close, acknowledge, assign, reprioritize, or post cross-project responses without exact human approval.
+- Define candidate commands after runbook validation.
+  - `/collab pm digest llm-gateway llm-routing-telemetry`
+  - `/collab monitor run routing`
+  - `/collab coordination draft <request_id>`
+- Define acceptance checks before implementation.
+  - Digest generation must not mutate collaboration request state.
+  - Hermes may suggest acknowledgement or follow-up text, but posting requires exact action-ID approval.
+  - High-priority, security, infrastructure, ownership, or priority-change items are escalated rather than automated.

@@ -34,6 +34,15 @@ DEFAULT_MONITOR_SCHEDULES = {
 }
 _REQUEST_ID_KEYS = ("request_id", "id")
 _REQUEST_IDENTITY_FIELDS = ("title", "subject", "from", "from_project", "to", "to_project", "created_at", "date")
+DEFAULT_PM_DIGEST_PROJECTS = (
+    "llm-gateway",
+    "llm-routing-telemetry",
+    "auto_researcher",
+    "agents",
+    "codex-openai",
+)
+_PM_DIGEST_ROUTE_FIELDS = ("from_project", "from", "to_project", "to", "project", "owner_project", "assignee")
+_PM_DIGEST_TEXT_FIELDS = ("title", "subject", "body", "description", "keywords", "tags")
 
 
 def normalize_monitor_kind(value: str) -> str | None:
@@ -97,6 +106,95 @@ def _compact_items(items: List[Dict[str, Any]], limit: int = 5) -> List[str]:
         suffix = f" [{priority}]" if priority else ""
         lines.append(f"- {prefix}{_item_title(item)}{suffix}")
     return lines
+
+
+def _pm_digest_projects(projects: List[str] | None = None) -> List[str]:
+    normalized = []
+    for project in projects or list(DEFAULT_PM_DIGEST_PROJECTS):
+        value = str(project or "").strip()
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized or list(DEFAULT_PM_DIGEST_PROJECTS)
+
+
+def _lower_values(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(str(item).lower() for item in value if item is not None)
+    if isinstance(value, dict):
+        return " ".join(f"{key} {item}".lower() for key, item in value.items() if item is not None)
+    return str(value or "").lower()
+
+
+def _pm_item_related(item: Dict[str, Any], projects: List[str]) -> bool:
+    project_set = {project.lower() for project in projects}
+    for field in _PM_DIGEST_ROUTE_FIELDS:
+        value = str(item.get(field) or "").strip().lower()
+        if value in project_set:
+            return True
+    haystack = " ".join(_lower_values(item.get(field)) for field in _PM_DIGEST_TEXT_FIELDS)
+    return any(project in haystack for project in project_set)
+
+
+def _pm_age_days(item: Dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = item.get(key)
+        try:
+            if value is not None and value != "":
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _pm_item_stale(item: Dict[str, Any]) -> bool:
+    age_days = _pm_age_days(item, "age_days")
+    if age_days is not None and age_days >= 3:
+        return True
+    update_age_days = _pm_age_days(item, "updated_age_days", "last_activity_age_days")
+    return update_age_days is not None and update_age_days >= 2
+
+
+def _pm_item_line(item: Dict[str, Any]) -> str:
+    request_id = item.get("request_id") or item.get("id")
+    route = " → ".join(
+        part for part in (
+            str(item.get("from_project") or item.get("from") or "").strip(),
+            str(item.get("to_project") or item.get("to") or "").strip(),
+        ) if part
+    )
+    priority = str(item.get("priority") or "").strip()
+    attrs = []
+    if priority:
+        attrs.append(priority)
+    age_days = _pm_age_days(item, "age_days")
+    if age_days is not None:
+        attrs.append(f"age={age_days:g}d")
+    update_age_days = _pm_age_days(item, "updated_age_days", "last_activity_age_days")
+    if update_age_days is not None:
+        attrs.append(f"updated={update_age_days:g}d")
+    prefix = f"{request_id}: " if request_id else ""
+    route_text = f"{route}: " if route else ""
+    suffix = f" [{' / '.join(attrs)}]" if attrs else ""
+    return f"- {prefix}{route_text}{_item_title(item)}{suffix}"
+
+
+def _pm_item_lines(items: List[Dict[str, Any]], limit: int = 5) -> List[str]:
+    if not items:
+        return ["- none found"]
+    lines = [_pm_item_line(item) for item in items[:limit]]
+    remaining = len(items) - limit
+    if remaining > 0:
+        lines.append(f"- ... and {remaining} more")
+    return lines
+
+
+def _pm_summary_line(project: str, summary: Dict[str, Any]) -> str:
+    data = summary.get("data") if isinstance(summary.get("data"), dict) else summary
+    phase = data.get("phase") or data.get("status") or data.get("lifecycle") or "status unknown"
+    blockers = data.get("blockers")
+    blocker_count = len(blockers) if isinstance(blockers, list) else data.get("blocker_count")
+    suffix = f"; blockers={blocker_count}" if blocker_count is not None else ""
+    return f"- {project}: {phase}{suffix}"
 
 
 def _utc_now() -> str:
@@ -201,6 +299,120 @@ def _pending_inbox_items(inbox: Dict[str, Any]) -> List[Dict[str, Any]]:
         return []
     pending = [item for item in items.values() if isinstance(item, dict) and item.get("status", "pending") == "pending"]
     return sorted(pending, key=lambda item: str(item.get("last_seen_at") or ""), reverse=True)
+
+
+def build_pm_digest(projects: List[str] | None = None, limit: int = 50) -> Dict[str, Any]:
+    focus_projects = _pm_digest_projects(projects)
+    open_requests = _call_collaboration("list_requests", status="open", limit=limit)
+    overdue = _call_collaboration("overdue_requests", limit=limit)
+    blockers = _call_collaboration("blockers", limit=limit)
+
+    reads = {
+        "open requests": open_requests,
+        "overdue requests": overdue,
+        "blockers": blockers,
+    }
+    failed_reads = [
+        f"{name}: {result.get('error') or 'unknown error'}"
+        for name, result in reads.items()
+        if not result.get("success")
+    ]
+
+    open_items = [
+        item for item in _items(open_requests.get("data"))
+        if _pm_item_related(item, focus_projects)
+    ] if open_requests.get("success") else []
+    overdue_items = [
+        item for item in _items(overdue.get("data"))
+        if _pm_item_related(item, focus_projects)
+    ] if overdue.get("success") else []
+    blocker_items = [
+        item for item in _items(blockers.get("data"))
+        if _pm_item_related(item, focus_projects)
+    ] if blockers.get("success") else []
+    high_priority = [
+        item for item in open_items
+        if str(item.get("priority") or "").strip().lower() == "high"
+    ]
+    stale_items = [item for item in open_items if _pm_item_stale(item)]
+
+    project_summaries: Dict[str, Any] = {}
+    summary_failures = []
+    for project in focus_projects:
+        summary = _call_collaboration("project_summary", project=project)
+        if summary.get("success"):
+            project_summaries[project] = summary
+        else:
+            summary_failures.append(f"{project}: {summary.get('error') or 'unknown error'}")
+
+    counts = {
+        "open": len(open_items),
+        "high_priority": len(high_priority),
+        "overdue": len(overdue_items),
+        "blockers": len(blocker_items),
+        "stale": len(stale_items),
+        "project_summaries_failed": len(summary_failures),
+    }
+    if failed_reads:
+        severity = "error"
+    elif high_priority or overdue_items or blocker_items:
+        severity = "high"
+    elif stale_items:
+        severity = "medium"
+    else:
+        severity = "info"
+
+    warnings = failed_reads + summary_failures
+    lines = [
+        "Routing/telemetry PM digest",
+        f"Projects: {', '.join(focus_projects)}",
+        "Safety: read-only digest; no collaboration state was changed and no responses were posted.",
+        "",
+        (
+            "Counts: "
+            f"open={counts['open']}, high={counts['high_priority']}, "
+            f"overdue={counts['overdue']}, blockers={counts['blockers']}, stale={counts['stale']}"
+        ),
+    ]
+    if warnings:
+        lines.extend(["", "Warnings:", *[f"- {warning}" for warning in warnings]])
+    lines.extend(["", "High-priority open requests:", *_pm_item_lines(high_priority)])
+    lines.extend(["", "Overdue requests:", *_pm_item_lines(overdue_items)])
+    lines.extend(["", "Stale coordination:", *_pm_item_lines(stale_items)])
+    lines.extend(["", "Blockers:", *_pm_item_lines(blocker_items)])
+    if project_summaries:
+        lines.extend(["", "Project health snapshots:"])
+        lines.extend(_pm_summary_line(project, summary) for project, summary in project_summaries.items())
+    if not any((open_items, high_priority, overdue_items, blocker_items, stale_items)):
+        lines.extend(["", "No open routing/telemetry coordination requiring HITL action was found."])
+    lines.extend([
+        "",
+        "Suggested HITL next actions:",
+        "- Review overdue/high-priority items first.",
+        "- Draft responses only after user review.",
+        "- Use /collab respond draft for approved low-risk follow-up text; this digest does not post.",
+    ])
+
+    return {
+        "success": not failed_reads,
+        "kind": "pm_digest",
+        "projects": focus_projects,
+        "should_notify": bool(high_priority or overdue_items or blocker_items or stale_items or failed_reads),
+        "severity": severity,
+        "counts": counts,
+        "sections": {
+            "open_requests": open_items,
+            "high_priority": high_priority,
+            "overdue": overdue_items,
+            "blockers": blocker_items,
+            "stale": stale_items,
+            "project_summaries": project_summaries,
+            "failed_reads": warnings,
+        },
+        "text": "\n".join(lines),
+        "error": "; ".join(failed_reads) if failed_reads else "",
+    }
+
 
 
 def build_daily_brief(limit: int = 20, project: str = "") -> Dict[str, Any]:

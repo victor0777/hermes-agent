@@ -3417,6 +3417,9 @@ class HermesCLI:
         if subcommand == "autonomy":
             self._handle_collab_autonomy_command(parts[2:])
             return
+        if subcommand == "pm":
+            self._handle_collab_pm_command(parts[2:])
+            return
         if subcommand == "inbox":
             from hermes_cli.config import load_config
 
@@ -3439,7 +3442,7 @@ class HermesCLI:
         }
         action = action_map.get(subcommand)
         if not action:
-            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|autonomy|monitor status|monitor run <daily|urgent|inbound>|monitor install <daily|urgent|inbound>]")
+            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|autonomy|pm digest [project ...]|monitor status|monitor run <daily|urgent|inbound>|monitor install <daily|urgent|inbound>]")
             return
         if subcommand == "project" and not project:
             _cprint("  Usage: /collab project <name>")
@@ -3565,6 +3568,26 @@ class HermesCLI:
             return
 
         _cprint(usage)
+
+    def _handle_collab_pm_command(self, args: list[str]):
+        """Handle read-only collaboration PM digest commands."""
+        from hermes_cli.config import load_config
+        from tools.collaboration_monitor import build_pm_digest
+
+        usage = "  Usage: /collab pm digest [project ...]"
+        action = args[0].lower() if args else "digest"
+        if action != "digest":
+            _cprint(usage)
+            return
+
+        config = load_config().get("collaboration", {}).get("monitor", {})
+        if not isinstance(config, dict):
+            config = {}
+        result = build_pm_digest(
+            projects=args[1:],
+            limit=int(config.get("limit") or 50),
+        )
+        _cprint(result.get("text") or result.get("error") or json.dumps(result, ensure_ascii=False, indent=2))
 
     def _handle_collab_autonomy_command(self, args: list[str]):
         """Handle local collaboration autonomy evidence commands."""
