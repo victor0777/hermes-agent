@@ -11,8 +11,6 @@ import argparse
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,9 +22,9 @@ sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(PROJECT_DIR / "tools"))
 
 from collaboration_autonomy import collect_security_intelligence  # noqa: E402
+from collaboration_requests import create_collaboration_request  # noqa: E402
 
 DEFAULT_CONFIG = Path.home() / ".hermes" / "config.yaml"
-DEFAULT_API_KEY = "sk-collab-mcp"
 VIRTUAL_PROJECT_ID = "security-intelligence-policy-loop"
 DEFAULT_AUTOMATION_POLICY = "auto"
 ALLOWED_AUTOMATION_POLICIES = {"manual", "auto", "auto_dispatch", "dispatch", "agent"}
@@ -38,26 +36,6 @@ def load_yaml(path: Path) -> dict:
     except FileNotFoundError:
         return {}
     return loaded if isinstance(loaded, dict) else {}
-
-
-def post_json(url: str, payload: dict, *, api_key: str, idempotency_key: str, timeout: int = 30) -> dict:
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "Idempotency-Key": idempotency_key,
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"board create failed: HTTP {exc.code}: {body[:500]}") from exc
 
 
 def build_review_body(result: dict) -> str:
@@ -152,33 +130,26 @@ def main() -> int:
     if result.get("success") and not args.dry_run:
         kst_today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
         idempotency_key = f"hermes-security-intel-daily-{kst_today}"
-        api_base = os.environ.get("COLLAB_API_BASE") or collaboration.get("base_url") or "http://192.168.0.193:7851"
-        api_key = os.environ.get("COLLAB_API_KEY") or DEFAULT_API_KEY
+        api_base = os.environ.get("COLLABORATION_API_BASE") or os.environ.get("COLLAB_API_BASE") or collaboration.get("base_url") or "http://192.168.0.193:7851"
         payload = {
-            "from": "hermes-agent",
-            "from_server": "par02",
-            "to": "cybersecurity-agent",
-            "kind": "request",
-            "subtype": "security_intelligence_review",
+            "request_id": f"REQ-HERMES-SECURITY-INTEL-{kst_today}",
+            "from_project": "hermes-agent",
+            "to_project": "cybersecurity-agent",
             "priority": "medium",
             "title": f"Daily security intelligence review from Hermes intake {kst_today}",
             "body": build_review_body(result),
-            "keywords": ["security-intelligence", "hermes-intake", "no-apply", "daily-review", "virtual-project"],
             "attachments": [
                 "virtual_projects/security-intelligence-policy-loop/plan.md",
                 "virtual_projects/security-intelligence-policy-loop/sources/security-intelligence-sources.json",
             ],
-            "virtual_project_id": VIRTUAL_PROJECT_ID,
-            "participant_role": "risk_reviewer",
-            "capability": "security_impact_review",
-            "action_required": True,
-            "automation_policy": automation_policy,
             "client_msg_id": idempotency_key,
         }
-        output["board_request"] = post_json(
-            f"{api_base.rstrip('/')}/api/v1/board/items",
+        output["board_request"] = create_collaboration_request(
             payload,
-            api_key=api_key,
+            config={
+                "base_url": api_base,
+                "writer_auth_token_env": collaboration.get("writer_auth_token_env", "COLLABORATION_WRITER_API_TOKEN"),
+            },
             idempotency_key=idempotency_key,
         )
 

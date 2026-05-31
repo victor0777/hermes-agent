@@ -214,6 +214,7 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "base_url": "http://collaboration.ktl.com",
         "auth_token_env": "COLLABORATION_API_TOKEN",
+        "writer_auth_token_env": "COLLABORATION_WRITER_API_TOKEN",
         "default_project": "",
         "gateway_brief_enabled": False,
         "monitor": {
@@ -235,6 +236,11 @@ DEFAULT_CONFIG = {
             "alert_on_blockers": True,
             "read_only": True,
             "gateway_install_enabled": False,
+        },
+        "security_intelligence": {
+            "sources": [],
+            "intake_path": "",
+            "fetch_timeout_seconds": 10,
         },
     },
 
@@ -782,6 +788,15 @@ OPTIONAL_ENV_VARS = {
     "COLLABORATION_API_TOKEN": {
         "description": "Bearer token for the collaboration PM API, if required",
         "prompt": "Collaboration API token",
+        "url": None,
+        "password": True,
+        "tools": ["collaboration"],
+        "category": "tool",
+        "advanced": True,
+    },
+    "COLLABORATION_WRITER_API_TOKEN": {
+        "description": "Writer bearer token for collaboration request creation. Do not use read-only dashboard tokens here.",
+        "prompt": "Collaboration writer API token",
         "url": None,
         "password": True,
         "tools": ["collaboration"],

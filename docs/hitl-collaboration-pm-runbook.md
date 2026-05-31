@@ -85,6 +85,57 @@ Manual evidence is still required for information Hermes cannot infer from local
 
 Detection coverage cannot pass unless actual target requests are logged explicitly.
 
+## Security intelligence intake
+
+Hermes can collect read-only security news, CTI, and advisory candidates for the `security-intelligence-policy-loop` without applying any policy, rule, runbook, scheduler, credential, or production change.
+
+Configure sources under `collaboration.security_intelligence.sources` in `~/.hermes/config.yaml`:
+
+```yaml
+collaboration:
+  security_intelligence:
+    sources:
+      - name: cisa-kev
+        type: json
+        url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+      - name: local-advisories
+        type: json
+        path: /home/ktl/security/advisories.json
+```
+
+The intake writes a local manifest at `~/.hermes/collaboration/security_intelligence/intake.json` by default and logs `Detection/security_intelligence_intake` evidence. If no source is configured, it returns `blocked` with `No security intelligence sources configured.`
+
+Manual verification commands:
+
+```text
+/collab security-intel intake 100
+/collab security-intel job-spec every 6h
+```
+
+Use the `security_intelligence_intake` tool for agent execution. The `/collab security-intel job-spec` command only prints the no-apply monitor template. Install or enable a local cron job only after the operator explicitly approves the source list and schedule.
+
+### Automated daily handoff (production baseline)
+
+`security_intelligence_daily.py` can be executed by OS cron with writer credential and venv context loaded from `~/.hermes/.env`.
+
+Configured baseline:
+
+- Schedule: 매일 02:00
+- Command:
+
+```text
+0 2 * * * /home/ktl/projects/hermes-agent/scripts/run_security_intelligence_daily.sh
+```
+
+This script writes output to:
+
+- `/home/ktl/projects/hermes-agent/data/logs/security-intelligence-daily.log`
+
+Evidence collection:
+
+- At least one successful dry-run and one successful live run after approval.
+- Request creation evidence in local log/output JSON (for live run).
+
 ## Gateway and telemetry coordination
 
 Hermes should also operate as a HITL PM assistant for the related `llm-gateway` and `llm-routing-telemetry` projects.
