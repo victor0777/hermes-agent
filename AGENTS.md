@@ -214,6 +214,8 @@ The registry handles schema collection, dispatch, availability checking, and err
 
 **State files**: If a tool stores persistent state (caches, logs, checkpoints), use `get_hermes_home()` for the base directory — never `Path.home() / ".hermes"`. This ensures each profile gets its own state.
 
+**Do not use `.omx/` paths**: OMX has been removed from this workspace. Do not write task state, verification artifacts, generated digests, or tool outputs under `.omx/`. Hermes-owned runtime artifacts should live under `get_hermes_home()`; knowledge librarian digests should default to `get_hermes_home() / "knowledge-librarian"` (displayed as `~/.hermes/knowledge-librarian` for the default profile).
+
 **Agent-level tools** (todo, memory): intercepted by `run_agent.py` before `handle_function_call()`. See `todo_tool.py` for the pattern.
 
 ---
