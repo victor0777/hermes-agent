@@ -65,3 +65,73 @@ def test_create_collaboration_request_posts_v2_request_and_initial_thread(monkey
     assert calls[1]["url"] == "http://example.test/api/v2/orchestrator/events/thread-entry-added/REQ-HERMES-1"
     assert calls[1]["json"]["body"] == "Please review this request."
     assert calls[1]["json"]["artifacts"] == ["artifact.md"]
+    assert len(calls) == 2
+
+
+def test_create_collaboration_request_manual_policy_does_not_dispatch(monkeypatch):
+    monkeypatch.setenv("COLLABORATION_WRITER_API_TOKEN", "writer-token")
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        return SimpleNamespace(ok=True, status_code=200, url=url, json=lambda: {"ok": True}, text="")
+
+    monkeypatch.setattr(requests_tool.requests, "post", fake_post)
+
+    result = requests_tool.create_collaboration_request(
+        {
+            "request_id": "REQ-HERMES-2",
+            "from_project": "hermes-agent",
+            "to_project": "cybersecurity-agent",
+            "title": "Manual request",
+            "body": "Do not dispatch automatically.",
+            "automation_policy": "manual",
+        },
+        config={"base_url": "http://example.test"},
+        idempotency_key="idem-2",
+    )
+
+    assert result["success"] is True
+    assert result["automation_policy"] == "manual"
+    assert result["auto_dispatch_requested"] is False
+    assert len(calls) == 2
+    assert calls[0]["url"] == "http://example.test/api/v2/requests"
+    assert calls[1]["url"] == "http://example.test/api/v2/orchestrator/events/thread-entry-added/REQ-HERMES-2"
+
+
+def test_create_collaboration_request_auto_policy_dispatches_and_collects(monkeypatch):
+    monkeypatch.setenv("COLLABORATION_WRITER_API_TOKEN", "writer-token")
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        return SimpleNamespace(ok=True, status_code=200, url=url, json=lambda: {"ok": True}, text="")
+
+    monkeypatch.setattr(requests_tool.requests, "post", fake_post)
+
+    result = requests_tool.create_collaboration_request(
+        {
+            "request_id": "REQ-HERMES-3",
+            "from_project": "hermes-agent",
+            "to_project": "cybersecurity-agent",
+            "title": "Auto request",
+            "body": "Dispatch automatically.",
+            "automation_policy": "auto",
+        },
+        config={"base_url": "http://example.test"},
+        idempotency_key="idem-3",
+    )
+
+    assert result["success"] is True
+    assert result["automation_policy"] == "auto"
+    assert result["auto_dispatch_requested"] is True
+    assert calls[0]["url"] == "http://example.test/api/v2/requests"
+    assert calls[1]["url"] == "http://example.test/api/v2/orchestrator/events/thread-entry-added/REQ-HERMES-3"
+    assert calls[2]["url"] == "http://example.test/api/v2/orchestrator/dispatch-and-collect"
+    assert calls[2]["json"] == {
+        "owner_project": "cybersecurity-agent",
+        "request_id": "REQ-HERMES-3",
+        "target_project": "cybersecurity-agent",
+        "mission": None,
+    }
+    assert result["dispatch"]["success"] is True

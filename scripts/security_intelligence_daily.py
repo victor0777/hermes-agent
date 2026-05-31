@@ -26,7 +26,7 @@ from collaboration_requests import create_collaboration_request  # noqa: E402
 
 DEFAULT_CONFIG = Path.home() / ".hermes" / "config.yaml"
 VIRTUAL_PROJECT_ID = "security-intelligence-policy-loop"
-DEFAULT_AUTOMATION_POLICY = "auto"
+DEFAULT_AUTOMATION_POLICY = "manual"
 ALLOWED_AUTOMATION_POLICIES = {"manual", "auto", "auto_dispatch", "dispatch", "agent"}
 
 
@@ -142,6 +142,9 @@ def main() -> int:
                 "virtual_projects/security-intelligence-policy-loop/plan.md",
                 "virtual_projects/security-intelligence-policy-loop/sources/security-intelligence-sources.json",
             ],
+            "automation_policy": automation_policy,
+            "dispatch_owner_project": "cybersecurity-agent",
+            "dispatch_target_project": "cybersecurity-agent",
             "client_msg_id": idempotency_key,
         }
         output["board_request"] = create_collaboration_request(

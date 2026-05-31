@@ -14,6 +14,7 @@ DEFAULT_BASE_URL = "http://collaboration.ktl.com"
 DEFAULT_WRITER_TOKEN_ENV = "COLLABORATION_WRITER_API_TOKEN"
 LEGACY_WRITER_TOKEN_ENVS = ("COLLAB_API_KEY",)
 WRITE_TIMEOUT_SECONDS = 15
+AUTO_DISPATCH_POLICIES = {"auto", "auto_dispatch", "dispatch", "agent"}
 
 
 def _utc_now() -> str:
@@ -85,6 +86,20 @@ def _response_payload(response: requests.Response) -> Dict[str, Any]:
     return result
 
 
+def _automation_policy(payload: Dict[str, Any], config: Dict[str, Any] | None = None) -> str:
+    collaboration_config = config or _collaboration_config()
+    raw = (
+        payload.get("automation_policy")
+        or collaboration_config.get("automation_policy")
+        or "manual"
+    )
+    return str(raw or "manual").strip().casefold()
+
+
+def _should_dispatch(policy: str) -> bool:
+    return policy in AUTO_DISPATCH_POLICIES
+
+
 def _request_body(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "request_id": str(payload.get("request_id") or "").strip(),
@@ -136,6 +151,7 @@ def create_collaboration_request(
         return {"success": False, "error": str(exc), "missing_writer_token": True}
 
     base_url = _base_url(config)
+    automation_policy = _automation_policy(payload, config)
     try:
         create_response = requests.post(
             f"{base_url}/api/v2/requests",
@@ -152,6 +168,8 @@ def create_collaboration_request(
         "request_id": request_id,
         "idempotency_key": idem,
         "token_env": token_env,
+        "automation_policy": automation_policy,
+        "auto_dispatch_requested": _should_dispatch(automation_policy),
         "request": create_result,
     }
     if not create_result.get("success"):
@@ -191,4 +209,43 @@ def create_collaboration_request(
     result["success"] = bool(thread_result.get("success"))
     if not thread_result.get("success"):
         result["error"] = thread_result.get("error", "Collaboration initial thread entry failed")
+        return result
+
+    if not _should_dispatch(automation_policy):
+        return result
+
+    dispatch_payload = {
+        "owner_project": str(
+            (config or {}).get("dispatch_owner_project")
+            or payload.get("dispatch_owner_project")
+            or request_payload["to_project"]
+        ),
+        "request_id": request_id,
+        "target_project": str(
+            (config or {}).get("dispatch_target_project")
+            or payload.get("dispatch_target_project")
+            or request_payload["to_project"]
+        ),
+        "mission": payload.get("dispatch_mission") or None,
+    }
+    try:
+        dispatch_response = requests.post(
+            f"{base_url}/api/v2/orchestrator/dispatch-and-collect",
+            headers=headers,
+            json=dispatch_payload,
+            timeout=WRITE_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        result["success"] = False
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        result["operation"] = "dispatch_and_collect"
+        result["dispatch"] = {"success": False, "payload": dispatch_payload}
+        return result
+
+    dispatch_result = _response_payload(dispatch_response)
+    dispatch_result["payload"] = dispatch_payload
+    result["dispatch"] = dispatch_result
+    result["success"] = bool(dispatch_result.get("success"))
+    if not dispatch_result.get("success"):
+        result["error"] = dispatch_result.get("error", "Collaboration dispatch-and-collect failed")
     return result
