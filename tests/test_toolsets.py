@@ -41,6 +41,9 @@ class TestResolveToolset:
         assert "collaboration" in tools
         assert "collaboration_search_knowledge" in tools
         assert "collaboration_board_search" in tools
+        assert "collaboration_librarian_digest" in tools
+        assert "security_intelligence_intake" in tools
+        assert "security_news_digest" in tools
 
     def test_cycle_detection(self):
         # Create a cycle: A includes B, B includes A

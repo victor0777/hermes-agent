@@ -3420,6 +3420,9 @@ class HermesCLI:
         if subcommand == "pm":
             self._handle_collab_pm_command(parts[2:])
             return
+        if subcommand in {"security-intel", "security-intelligence"}:
+            self._handle_collab_security_intel_command(parts[2:])
+            return
         if subcommand == "inbox":
             from hermes_cli.config import load_config
 
@@ -3442,7 +3445,7 @@ class HermesCLI:
         }
         action = action_map.get(subcommand)
         if not action:
-            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|autonomy|pm digest [project ...]|monitor status|monitor run <daily|urgent|inbound>|monitor install <daily|urgent|inbound>]")
+            _cprint("  Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|autonomy|pm digest [project ...]|monitor status|monitor run <daily|urgent|inbound>|monitor install <daily|urgent|inbound>|security-intel intake [limit]|security-intel job-spec [schedule]]")
             return
         if subcommand == "project" and not project:
             _cprint("  Usage: /collab project <name>")
@@ -3652,6 +3655,34 @@ class HermesCLI:
                 lines.extend(["", "Reasons:"])
                 lines.extend(f"- {reason}" for reason in reasons)
             _cprint("\n".join(lines))
+            return
+
+        _cprint(usage)
+
+    def _handle_collab_security_intel_command(self, args: list[str]):
+        """Handle local security intelligence intake commands."""
+        from tools.collaboration_autonomy import (
+            collect_security_intelligence,
+            security_intelligence_monitor_job_spec,
+        )
+
+        usage = "  Usage: /collab security-intel intake [limit]|job-spec [schedule]"
+        action = args[0].lower() if args else "intake"
+
+        if action == "intake":
+            limit = 100
+            if len(args) > 1:
+                try:
+                    limit = int(args[1])
+                except ValueError:
+                    _cprint("  Usage: /collab security-intel intake [limit]")
+                    return
+            _cprint(json.dumps(collect_security_intelligence(limit=limit), ensure_ascii=False, indent=2))
+            return
+
+        if action in {"job-spec", "jobspec"}:
+            schedule = " ".join(args[1:]).strip() or "every 6h"
+            _cprint(json.dumps(security_intelligence_monitor_job_spec(schedule=schedule), ensure_ascii=False, indent=2))
             return
 
         _cprint(usage)

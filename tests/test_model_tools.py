@@ -91,6 +91,8 @@ class TestBackwardCompat:
         assert "collaboration" in names
         assert "collaboration_search_knowledge" in names
         assert "collaboration_board_search" in names
+        assert "collaboration_librarian_digest" in names
+        assert "security_intelligence_intake" in names
 
     def test_get_toolset_for_tool(self):
         result = get_toolset_for_tool("web_search")
@@ -106,3 +108,5 @@ class TestBackwardCompat:
         assert len(TOOL_TO_TOOLSET_MAP) > 0
         assert TOOL_TO_TOOLSET_MAP["collaboration_search_knowledge"] == "collaboration"
         assert TOOL_TO_TOOLSET_MAP["collaboration_board_search"] == "collaboration"
+        assert TOOL_TO_TOOLSET_MAP["collaboration_librarian_digest"] == "collaboration"
+        assert TOOL_TO_TOOLSET_MAP["security_intelligence_intake"] == "collaboration"

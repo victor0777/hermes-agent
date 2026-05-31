@@ -19,6 +19,22 @@
   - Invoke a constrained Hermes prompt only after user approval.
 - Define the safety boundary for writeback.
   - Keep collaboration writeback unavailable until an approval-gated action flow exists.
+
+## Security Intelligence Intake
+
+- [x] Add read-only security news/CTI/advisory intake for the virtual project security loop.
+  - Implements `collect_security_intelligence()` in `tools/collaboration_autonomy.py`.
+  - Supports configured RSS/Atom, JSON, and local file sources.
+  - Writes a local intake manifest under Hermes home by default: `collaboration/security_intelligence/intake.json`.
+  - Records local autonomy evidence event `Detection/security_intelligence_intake`.
+  - Returns `blocked` with an explicit blocker when no sources are configured.
+  - Exposes `security_intelligence_intake` as a collaboration tool.
+  - Adds `/collab security-intel intake [limit]` for manual read-only collection.
+  - Adds `/collab security-intel job-spec [schedule]` for no-apply monitor spec review.
+  - Provides `security_intelligence_monitor_job_spec()` as a no-apply monitor job template; installing/enabling a scheduler remains an explicit operator action.
+- [ ] Configure actual CTI/security advisory sources for the par02 Hermes runtime.
+  - Candidate source examples: CISA KEV JSON, vendor RSS feeds, GitHub security advisory feeds, or local curated advisory files.
+  - Do not enable policy/rule/runbook application from this intake without a separate apply approval gate.
   - Require explicit approval before responding, closing, reassigning, changing priority, or sending notices.
 - Add observability and acceptance checks.
   - Log bridge detections and skipped duplicates.

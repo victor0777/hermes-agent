@@ -3467,6 +3467,8 @@ class GatewayRunner:
             return await self._handle_collab_monitor_command(parts[1:])
         if subcommand == "pm":
             return await self._handle_collab_pm_command(parts[1:])
+        if subcommand in {"security-intel", "security-intelligence"}:
+            return await self._handle_collab_security_intel_command(parts[1:])
         if subcommand == "respond":
             return "Posting collaboration responses is CLI-only in the approval-gated rollout. Use /collab respond draft and /collab respond post from the local CLI."
         if subcommand == "inbox":
@@ -3490,7 +3492,7 @@ class GatewayRunner:
         }
         action = action_map.get(subcommand)
         if not action:
-            return "Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|pm digest [project ...]|monitor status|monitor run <daily|urgent|inbound>]"
+            return "Usage: /collab [brief|dashboard|requests|overdue|blockers|reports|project <name>|inbox|respond|pm digest [project ...]|monitor status|monitor run <daily|urgent|inbound>|security-intel intake [limit]|security-intel job-spec [schedule]]"
         if subcommand == "project" and not project:
             return "Usage: /collab project <name>"
 
@@ -3523,6 +3525,31 @@ class GatewayRunner:
             limit=int(config.get("limit") or 50),
         )
         return result.get("text") or result.get("error") or json.dumps(result, ensure_ascii=False, indent=2)
+
+    async def _handle_collab_security_intel_command(self, args: list[str]) -> str:
+        """Handle local security intelligence intake commands from gateway."""
+        from tools.collaboration_autonomy import (
+            collect_security_intelligence,
+            security_intelligence_monitor_job_spec,
+        )
+
+        usage = "Usage: /collab security-intel intake [limit]|job-spec [schedule]"
+        action = args[0].lower() if args else "intake"
+
+        if action == "intake":
+            limit = 100
+            if len(args) > 1:
+                try:
+                    limit = int(args[1])
+                except ValueError:
+                    return "Usage: /collab security-intel intake [limit]"
+            return json.dumps(collect_security_intelligence(limit=limit), ensure_ascii=False, indent=2)
+
+        if action in {"job-spec", "jobspec"}:
+            schedule = " ".join(args[1:]).strip() or "every 6h"
+            return json.dumps(security_intelligence_monitor_job_spec(schedule=schedule), ensure_ascii=False, indent=2)
+
+        return usage
 
     async def _handle_collab_monitor_command(self, args: list[str]) -> str:
         """Handle deterministic collaboration PM monitor commands from gateway."""

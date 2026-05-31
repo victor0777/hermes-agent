@@ -62,6 +62,7 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Collaboration project-management state and search (read-only)
     "collaboration", "collaboration_search_knowledge", "collaboration_board_search",
+    "collaboration_librarian_digest", "security_intelligence_intake", "security_news_digest",
     # Honcho memory tools (gated on honcho being active via check_fn)
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -140,7 +141,10 @@ TOOLSETS = {
 
     "collaboration": {
         "description": "Read-only collaboration.ktl.com project-management state and search",
-        "tools": ["collaboration", "collaboration_search_knowledge", "collaboration_board_search"],
+        "tools": [
+            "collaboration", "collaboration_search_knowledge", "collaboration_board_search",
+            "collaboration_librarian_digest", "security_intelligence_intake", "security_news_digest",
+        ],
         "includes": []
     },
 

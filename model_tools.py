@@ -157,6 +157,8 @@ def _discover_tools():
         "tools.process_registry",
         "tools.send_message_tool",
         "tools.collaboration_tool",
+        "tools.collaboration_librarian_tool",
+        "tools.security_digest_tool",
         "tools.honcho_tools",
         "tools.homeassistant_tool",
     ]

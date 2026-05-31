@@ -8,6 +8,7 @@ from tools.collaboration_tool import (
     collaboration_board_search,
     collaboration_search_knowledge,
     collaboration_tool,
+    security_intelligence_intake_tool,
 )
 
 
@@ -23,6 +24,16 @@ class TestCollaborationTool:
 
         assert result["success"] is False
         assert "project" in result["error"]
+
+    def test_security_intelligence_intake_tool_reports_blocked_without_sources(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.collaboration_autonomy.collect_security_intelligence",
+            lambda limit=100: {"success": False, "status": "blocked", "limit": limit},
+        )
+
+        result = json.loads(security_intelligence_intake_tool(limit=5))
+
+        assert result == {"success": False, "status": "blocked", "limit": 5}
 
     def test_fetches_dashboard_with_default_base_url(self, monkeypatch):
         response = Mock()

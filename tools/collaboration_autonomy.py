@@ -3,7 +3,10 @@
 import hashlib
 import json
 import statistics
+import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -117,6 +120,43 @@ def _save_evidence_log(path: Path, payload: Dict[str, Any]) -> None:
     atomic_json_write(path, payload, indent=2, sort_keys=True)
 
 
+def _security_intelligence_config(config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    collaboration = config or _collaboration_config()
+    security_intelligence = collaboration.get("security_intelligence") if isinstance(collaboration, dict) else None
+    merged: Dict[str, Any] = security_intelligence.copy() if isinstance(security_intelligence, dict) else {}
+    if isinstance(config, dict):
+        for key in (
+            "security_intelligence_sources",
+            "security_intelligence_intake_path",
+            "security_intelligence_fetch_timeout_seconds",
+        ):
+            if key in config:
+                merged[key] = config[key]
+    return merged
+
+
+def _security_intelligence_intake_path(config: Dict[str, Any] | None = None) -> Path:
+    settings = _security_intelligence_config(config)
+    configured = settings.get("intake_path") or settings.get("security_intelligence_intake_path")
+    if configured:
+        return Path(str(configured)).expanduser()
+    return get_hermes_home() / "collaboration" / "security_intelligence" / "intake.json"
+
+
+def _security_intelligence_sources(config: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
+    settings = _security_intelligence_config(config)
+    sources = settings.get("sources") or settings.get("security_intelligence_sources") or []
+    if not isinstance(sources, list):
+        return []
+    normalized = []
+    for source in sources:
+        if isinstance(source, str):
+            normalized.append({"name": source, "url": source, "type": "rss"})
+        elif isinstance(source, dict):
+            normalized.append(source.copy())
+    return [source for source in normalized if source.get("enabled", True) is not False]
+
+
 def _event_id(category: str, event: str, request_id: str, action_id: str, timestamp: str, metadata: Dict[str, Any]) -> str:
     digest = hashlib.sha256(
         json.dumps(
@@ -174,6 +214,215 @@ def append_evidence_event(
     log["events"].append(record)
     _save_evidence_log(path, log)
     return {"success": True, "event": record, "evidence_log_path": str(path)}
+
+
+def _fetch_source_bytes(source: Dict[str, Any], *, timeout: int) -> bytes:
+    location = source.get("path") or source.get("url")
+    if not location:
+        raise ValueError("source requires path or url")
+    text = str(location)
+    if text.startswith(("http://", "https://")):
+        request = urllib.request.Request(text, headers={"User-Agent": "hermes-security-intelligence/1.0"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    return Path(text).expanduser().read_bytes()
+
+
+def _parse_rss_items(raw: bytes, source: Dict[str, Any]) -> List[Dict[str, Any]]:
+    root = ET.fromstring(raw)
+    items = []
+    for node in root.findall(".//item") + root.findall(".//{http://www.w3.org/2005/Atom}entry"):
+        title = _xml_text(node, "title")
+        link = _xml_text(node, "link")
+        if not link:
+            atom_link = node.find("{http://www.w3.org/2005/Atom}link")
+            link = atom_link.get("href", "") if atom_link is not None else ""
+        published = _normalize_date(_xml_text(node, "pubDate") or _xml_text(node, "published") or _xml_text(node, "updated"))
+        summary = _xml_text(node, "description") or _xml_text(node, "summary")
+        items.append(_candidate(source, title=title, url=link, published_at=published, summary=summary))
+    return [item for item in items if item.get("title") or item.get("url")]
+
+
+def _xml_text(node: ET.Element, tag: str) -> str:
+    found = node.find(tag)
+    if found is None:
+        found = node.find(f"{{http://www.w3.org/2005/Atom}}{tag}")
+    return "".join(found.itertext()).strip() if found is not None else ""
+
+
+def _parse_json_items(raw: bytes, source: Dict[str, Any]) -> List[Dict[str, Any]]:
+    loaded = json.loads(raw.decode("utf-8"))
+    if isinstance(loaded, list):
+        rows = loaded
+    elif isinstance(loaded, dict):
+        rows = []
+        for key in ("items", "advisories", "vulnerabilities", "cves", "results"):
+            value = loaded.get(key)
+            if isinstance(value, list):
+                rows = value
+                break
+        if not rows and loaded:
+            rows = [loaded]
+    else:
+        rows = []
+    items = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cve = row.get("cve") or row.get("cve_id") or row.get("cveID") or row.get("id") or row.get("name")
+        title = row.get("title") or row.get("vulnerabilityName") or row.get("summary") or row.get("description") or cve
+        url = row.get("url") or row.get("link") or row.get("source_url") or row.get("references")
+        if isinstance(url, list):
+            url = url[0] if url else ""
+        published = _normalize_date(row.get("published") or row.get("published_at") or row.get("dateAdded") or row.get("date") or row.get("updated"))
+        items.append(
+            _candidate(
+                source,
+                title=str(title or ""),
+                url=str(url or ""),
+                published_at=published,
+                summary=str(row.get("shortDescription") or row.get("description") or row.get("summary") or ""),
+                cve_id=str(cve or ""),
+                severity=str(row.get("severity") or row.get("cvss") or ""),
+                tags=row.get("tags") if isinstance(row.get("tags"), list) else [],
+            )
+        )
+    return [item for item in items if item.get("title") or item.get("url") or item.get("cve_id")]
+
+
+def _normalize_date(value: Any) -> str:
+    if not value:
+        return ""
+    text = str(value)
+    try:
+        parsed = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _candidate(
+    source: Dict[str, Any],
+    *,
+    title: str = "",
+    url: str = "",
+    published_at: str = "",
+    summary: str = "",
+    cve_id: str = "",
+    severity: str = "",
+    tags: List[str] | None = None,
+) -> Dict[str, Any]:
+    source_name = str(source.get("name") or source.get("url") or source.get("path") or "unknown")
+    identity = cve_id or url or f"{source_name}:{title}:{published_at}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return {
+        "candidate_id": f"secintel-{digest}",
+        "source": source_name,
+        "source_type": str(source.get("type") or "rss"),
+        "title": str(title or "").strip(),
+        "url": str(url or "").strip(),
+        "published_at": published_at,
+        "summary": str(summary or "").strip(),
+        "cve_id": cve_id,
+        "severity": severity,
+        "tags": tags or [],
+        "status": "candidate",
+    }
+
+
+def collect_security_intelligence(
+    *,
+    limit: int = 100,
+    config: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Collect security news/CTI/advisory candidates from configured read-only sources."""
+    settings = _security_intelligence_config(config)
+    timeout = int(settings.get("fetch_timeout_seconds") or settings.get("security_intelligence_fetch_timeout_seconds") or 10)
+    sources = _security_intelligence_sources(config)
+    intake_path = _security_intelligence_intake_path(config)
+    if not sources:
+        result = {
+            "success": False,
+            "status": "blocked",
+            "blockers": ["No security intelligence sources configured."],
+            "items": [],
+            "source_count": 0,
+            "intake_path": str(intake_path),
+        }
+        append_evidence_event(
+            "Detection",
+            "security_intelligence_intake",
+            result="blocked",
+            metadata={"source_count": 0, "item_count": 0, "blockers": result["blockers"]},
+            config=config,
+        )
+        return result
+
+    errors: List[Dict[str, Any]] = []
+    candidates: Dict[str, Dict[str, Any]] = {}
+    for source in sources:
+        try:
+            raw = _fetch_source_bytes(source, timeout=timeout)
+            source_type = str(source.get("type") or "").lower()
+            if source_type in {"json", "kev", "cve"} or str(source.get("url") or source.get("path") or "").endswith(".json"):
+                parsed = _parse_json_items(raw, source)
+            else:
+                parsed = _parse_rss_items(raw, source)
+            for item in parsed:
+                candidates[item["candidate_id"]] = item
+        except Exception as exc:
+            errors.append({"source": source.get("name") or source.get("url") or source.get("path"), "error": str(exc)})
+
+    items = sorted(candidates.values(), key=lambda item: item.get("published_at") or "", reverse=True)[: max(0, int(limit or 100))]
+    payload = {
+        "version": 1,
+        "updated_at": _utc_now(),
+        "source_count": len(sources),
+        "item_count": len(items),
+        "error_count": len(errors),
+        "sources": [{"name": source.get("name", ""), "type": source.get("type", ""), "url": source.get("url", ""), "path": source.get("path", "")} for source in sources],
+        "errors": errors,
+        "items": items,
+    }
+    atomic_json_write(intake_path, payload, indent=2, sort_keys=True)
+    append_evidence_event(
+        "Detection",
+        "security_intelligence_intake",
+        result="success" if items else "blocked",
+        metadata={"source_count": len(sources), "item_count": len(items), "error_count": len(errors), "intake_path": str(intake_path)},
+        config=config,
+    )
+    return {
+        "success": bool(items),
+        "status": "collected" if items else "blocked",
+        "items": items,
+        "source_count": len(sources),
+        "item_count": len(items),
+        "errors": errors,
+        "intake_path": str(intake_path),
+        "blockers": [] if items else ["Configured security intelligence sources returned no candidates."],
+    }
+
+
+def security_intelligence_monitor_job_spec(*, schedule: str = "every 6h", deliver: str = "local") -> Dict[str, Any]:
+    prompt = (
+        "Run the read-only security intelligence intake. "
+        "Use configured security_intelligence sources, collect current security news/CTI/advisory candidates, "
+        "write the intake manifest, and report item count, blockers, and follow-up needs. "
+        "Do not apply policy, runbook, rule, credential, scheduler, or production changes."
+    )
+    return {
+        "name": "security-intelligence-intake-monitor",
+        "schedule": schedule,
+        "deliver": deliver,
+        "prompt": prompt,
+        "scope": "read_only_no_apply",
+    }
 
 
 def list_evidence_events(
@@ -262,10 +511,16 @@ def compute_autonomy_kpis(config: Dict[str, Any] | None = None) -> Dict[str, Any
     }
 
     write_events = [event for event in events if event.get("category") == "Write" and event.get("event") == "network_write_attempted"]
-    approved_write_events = [event for event in write_events if (event.get("metadata") or {}).get("approved") is True]
+    approved_write_events = [
+        event for event in write_events
+        if (event.get("metadata") or {}).get("approved") is True or str(event.get("action_id") or "") in approved_actions
+    ]
     successful_approved_write_events = [event for event in approved_write_events if _success(event.get("result"))]
     explicit_unapproved_writes = [event for event in events if event.get("category") == "Safety" and event.get("event") == "unapproved_write_detected"]
-    unapproved_write_count = len([event for event in write_events if (event.get("metadata") or {}).get("approved") is not True]) + len(explicit_unapproved_writes)
+    unapproved_write_count = len([
+        event for event in write_events
+        if (event.get("metadata") or {}).get("approved") is not True and str(event.get("action_id") or "") not in approved_actions
+    ]) + len(explicit_unapproved_writes)
 
     critical_error_count = len([
         event for event in events

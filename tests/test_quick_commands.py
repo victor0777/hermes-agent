@@ -275,6 +275,39 @@ class TestCLIQuickCommands:
         assert result is True
         assert "Usage: /collab autonomy" in cprint.call_args.args[0]
 
+    def test_collab_security_intel_intake_prints_json(self):
+        cli = self._make_cli({})
+        with patch("tools.collaboration_autonomy.collect_security_intelligence", return_value={"success": True, "candidate_count": 2}) as collect, \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab security-intel intake 5")
+
+        assert result is True
+        collect.assert_called_once_with(limit=5)
+        printed = cprint.call_args.args[0]
+        assert '"candidate_count": 2' in printed
+
+    def test_collab_security_intel_job_spec_prints_no_apply_spec(self):
+        cli = self._make_cli({})
+        spec = {"name": "security-intelligence-intake-monitor", "scope": "read_only_no_apply", "schedule": "every 2h"}
+        with patch("tools.collaboration_autonomy.security_intelligence_monitor_job_spec", return_value=spec) as job_spec, \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab security-intel job-spec every 2h")
+
+        assert result is True
+        job_spec.assert_called_once_with(schedule="every 2h")
+        printed = cprint.call_args.args[0]
+        assert "read_only_no_apply" in printed
+
+    def test_collab_security_intel_invalid_limit_prints_usage(self):
+        cli = self._make_cli({})
+        with patch("tools.collaboration_autonomy.collect_security_intelligence") as collect, \
+             patch("cli._cprint") as cprint:
+            result = cli.process_command("/collab security-intel intake nope")
+
+        assert result is True
+        collect.assert_not_called()
+        assert "Usage: /collab security-intel intake" in cprint.call_args.args[0]
+
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 
@@ -470,6 +503,47 @@ class TestGatewayQuickCommands:
             limit=5,
             project="hermes-agent",
         )
+
+    @pytest.mark.asyncio
+    async def test_collab_security_intel_intake_available_from_gateway(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner.hooks = MagicMock()
+        runner.hooks.emit = AsyncMock()
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("collab", "security-intel intake 3")
+        with patch("hermes_cli.commands._is_gateway_available", return_value=True), \
+             patch("tools.collaboration_autonomy.collect_security_intelligence", return_value={"success": True, "candidate_count": 1}) as collect:
+            result = await runner._handle_message(event)
+
+        assert '"candidate_count": 1' in result
+        collect.assert_called_once_with(limit=3)
+
+    @pytest.mark.asyncio
+    async def test_collab_security_intel_job_spec_available_from_gateway(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner.hooks = MagicMock()
+        runner.hooks.emit = AsyncMock()
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("collab", "security-intel job-spec every 12h")
+        spec = {"name": "security-intelligence-intake-monitor", "scope": "read_only_no_apply", "schedule": "every 12h"}
+        with patch("hermes_cli.commands._is_gateway_available", return_value=True), \
+             patch("tools.collaboration_autonomy.security_intelligence_monitor_job_spec", return_value=spec) as job_spec:
+            result = await runner._handle_message(event)
+
+        assert "read_only_no_apply" in result
+        job_spec.assert_called_once_with(schedule="every 12h")
 
     @pytest.mark.asyncio
     async def test_unsupported_type_returns_error(self):

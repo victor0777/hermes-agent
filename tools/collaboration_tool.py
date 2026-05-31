@@ -577,3 +577,40 @@ registry.register(
     check_fn=check_collaboration_requirements,
     description=COLLABORATION_BOARD_SEARCH_SCHEMA["description"],
 )
+
+
+SECURITY_INTELLIGENCE_INTAKE_SCHEMA = {
+    "name": "security_intelligence_intake",
+    "description": (
+        "Read-only security news/CTI/advisory intake for the collaboration security-intelligence workflow. "
+        "Collects configured sources, deduplicates candidates, writes a local intake manifest, and records local evidence. "
+        "It does not apply policy, rule, runbook, credential, scheduler, or production changes."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of candidates to return.",
+                "default": 100,
+            }
+        },
+        "required": [],
+    },
+}
+
+
+def security_intelligence_intake_tool(limit: int = 100) -> str:
+    from tools.collaboration_autonomy import collect_security_intelligence
+
+    return json.dumps(collect_security_intelligence(limit=limit), ensure_ascii=False)
+
+
+registry.register(
+    name="security_intelligence_intake",
+    toolset="collaboration",
+    schema=SECURITY_INTELLIGENCE_INTAKE_SCHEMA,
+    handler=lambda args, **kw: security_intelligence_intake_tool(limit=args.get("limit", 100)),
+    check_fn=lambda: True,
+    description=SECURITY_INTELLIGENCE_INTAKE_SCHEMA["description"],
+)
