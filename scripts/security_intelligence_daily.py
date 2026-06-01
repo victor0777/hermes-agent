@@ -28,6 +28,7 @@ DEFAULT_CONFIG = Path.home() / ".hermes" / "config.yaml"
 VIRTUAL_PROJECT_ID = "security-intelligence-policy-loop"
 DEFAULT_AUTOMATION_POLICY = "manual"
 ALLOWED_AUTOMATION_POLICIES = {"manual", "auto", "auto_dispatch", "dispatch", "agent"}
+DEFAULT_REPORT_DIR = PROJECT_DIR / "data" / "security-intelligence" / "reports"
 
 
 def load_yaml(path: Path) -> dict:
@@ -38,17 +39,80 @@ def load_yaml(path: Path) -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _load_intake(result: dict) -> dict:
+    intake_path = result.get("intake_path", "")
+    try:
+        loaded = json.loads(Path(intake_path).read_text())
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _plain(value: object, *, limit: int = 260) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _item_lines(items: list[dict], *, limit: int = 10) -> list[str]:
+    lines = []
+    for idx, item in enumerate(items[:limit], 1):
+        title = _plain(item.get("title"), limit=180) or "Untitled"
+        source = _plain(item.get("source"), limit=80) or "unknown"
+        published = _plain(item.get("published_at"), limit=80) or "unknown"
+        url = _plain(item.get("url"), limit=500)
+        summary = _plain(item.get("summary"), limit=300)
+        cve_id = _plain(item.get("cve_id"), limit=80)
+        lines.append(f"{idx}. [{source}] {title}")
+        lines.append(f"   - published_at: {published}")
+        if cve_id:
+            lines.append(f"   - cve_id: {cve_id}")
+        if url:
+            lines.append(f"   - url: {url}")
+        if summary:
+            lines.append(f"   - summary: {summary}")
+    return lines or ["No security intelligence items were collected."]
+
+
+def write_report(result: dict, *, report_date: str, output_dir: str = "") -> str:
+    intake = _load_intake(result)
+    items = [item for item in intake.get("items", []) if isinstance(item, dict)]
+    report_root = Path(output_dir).expanduser() if output_dir else DEFAULT_REPORT_DIR
+    report_path = report_root / f"security-intelligence-report-{report_date}.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"# Security Intelligence Daily Report - {report_date}",
+        "",
+        f"- intake_path: `{result.get('intake_path', '')}`",
+        f"- updated_at: `{intake.get('updated_at', '')}`",
+        f"- source_count: {result.get('source_count', 0)}",
+        f"- item_count: {result.get('item_count', 0)}",
+        f"- error_count: {len(result.get('errors') or [])}",
+        "- scope: no-apply review only; policy, rule, runbook, scanner, credential, or production changes require separate approval.",
+        "",
+        "## Collected Items",
+        "",
+        *_item_lines(items, limit=25),
+        "",
+        "## Reporting Guidance",
+        "",
+        "- Report risk, evidence, uncertainty, and required approvals separately.",
+        "- Treat affected-server claims as unconfirmed unless authoritative affected/fixed version evidence and managed-asset inventory both exist.",
+    ]
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return str(report_path)
+
+
 def build_review_body(result: dict) -> str:
     intake_path = result.get("intake_path", "")
     item_count = result.get("item_count", 0)
     source_count = result.get("source_count", 0)
     error_count = len(result.get("errors") or [])
-    updated_at = ""
-    try:
-        payload = json.loads(Path(intake_path).read_text())
-        updated_at = payload.get("updated_at", "")
-    except Exception:
-        pass
+    intake = _load_intake(result)
+    updated_at = intake.get("updated_at", "")
+    items = [item for item in intake.get("items", []) if isinstance(item, dict)]
+    item_summary = "\n".join(_item_lines(items, limit=10))
 
     return f"""Hermes가 승인된 보안 인텔리전스 소스를 주기 수집했고, 아래 intake를 생성했습니다. cybersecurity-agent는 이 intake를 읽고 no-apply 검토와 작업계획을 작성해 주세요.
 
@@ -58,6 +122,9 @@ Hermes intake:
 - source_count: {source_count}
 - item_count: {item_count}
 - error_count: {error_count}
+
+오늘 수집된 주요 항목(상위 10개):
+{item_summary}
 
 요청 작업:
 1. intake 후보를 읽고 중복/후보 정리를 수행합니다.
@@ -131,6 +198,7 @@ def main() -> int:
         kst_today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
         idempotency_key = f"hermes-security-intel-daily-{kst_today}"
         api_base = os.environ.get("COLLABORATION_API_BASE") or os.environ.get("COLLAB_API_BASE") or collaboration.get("base_url") or "http://192.168.0.193:7851"
+        report_path = write_report(result, report_date=kst_today, output_dir=security.get("report_dir", ""))
         payload = {
             "request_id": f"REQ-HERMES-SECURITY-INTEL-{kst_today}",
             "from_project": "hermes-agent",
@@ -139,6 +207,7 @@ def main() -> int:
             "title": f"Daily security intelligence review from Hermes intake {kst_today}",
             "body": build_review_body(result),
             "attachments": [
+                report_path,
                 "virtual_projects/security-intelligence-policy-loop/plan.md",
                 "virtual_projects/security-intelligence-policy-loop/sources/security-intelligence-sources.json",
             ],
