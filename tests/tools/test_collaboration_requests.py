@@ -68,6 +68,40 @@ def test_create_collaboration_request_posts_v2_request_and_initial_thread(monkey
     assert len(calls) == 2
 
 
+def test_create_collaboration_request_posts_optional_board_metadata(monkeypatch):
+    monkeypatch.setenv("COLLABORATION_WRITER_API_TOKEN", "writer-token")
+    calls = []
+
+    def fake_post(url, headers, json, timeout):
+        calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        return SimpleNamespace(ok=True, status_code=200, url=url, json=lambda: {"ok": True}, text="")
+
+    monkeypatch.setattr(requests_tool.requests, "post", fake_post)
+
+    result = requests_tool.create_collaboration_request(
+        {
+            "request_id": "REQ-HERMES-SECURITY-1",
+            "from_project": "hermes-agent",
+            "to_project": "cybersecurity-agent",
+            "title": "Security intelligence handoff",
+            "body": "Review only.",
+            "kind": "request",
+            "subtype": "security_intelligence_daily",
+            "category": "security",
+            "audience": "security",
+            "action_required": True,
+        },
+        config={"base_url": "http://example.test"},
+    )
+
+    assert result["success"] is True
+    assert calls[0]["json"]["kind"] == "request"
+    assert calls[0]["json"]["subtype"] == "security_intelligence_daily"
+    assert calls[0]["json"]["category"] == "security"
+    assert calls[0]["json"]["audience"] == "security"
+    assert calls[0]["json"]["action_required"] is True
+
+
 def test_create_collaboration_request_manual_policy_does_not_dispatch(monkeypatch):
     monkeypatch.setenv("COLLABORATION_WRITER_API_TOKEN", "writer-token")
     calls = []

@@ -101,7 +101,7 @@ def _should_dispatch(policy: str) -> bool:
 
 
 def _request_body(payload: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    request: Dict[str, Any] = {
         "request_id": str(payload.get("request_id") or "").strip(),
         "from_project": str(payload.get("from_project") or payload.get("from") or "hermes-agent").strip(),
         "to_project": str(payload.get("to_project") or payload.get("to") or "").strip(),
@@ -114,6 +114,13 @@ def _request_body(payload: Dict[str, Any]) -> Dict[str, Any]:
         "callback_ref": str(payload.get("callback_ref") or "").strip(),
         "resume_context_ref": str(payload.get("resume_context_ref") or "").strip(),
     }
+    for field in ("kind", "subtype", "audience", "category"):
+        value = str(payload.get(field) or "").strip()
+        if value:
+            request[field] = value
+    if isinstance(payload.get("action_required"), bool):
+        request["action_required"] = payload["action_required"]
+    return request
 
 
 def _initial_thread_body(payload: Dict[str, Any]) -> str:

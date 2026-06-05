@@ -114,7 +114,7 @@ def build_review_body(result: dict) -> str:
     items = [item for item in intake.get("items", []) if isinstance(item, dict)]
     item_summary = "\n".join(_item_lines(items, limit=10))
 
-    return f"""Hermes가 승인된 보안 인텔리전스 소스를 주기 수집했고, 아래 intake를 생성했습니다. cybersecurity-agent는 이 intake를 읽고 no-apply 검토와 작업계획을 작성해 주세요.
+    return f"""Hermes가 승인된 보안 인텔리전스 소스를 주기 수집했고, 아래 intake를 생성했습니다. cybersecurity-agent는 이 intake를 읽고 no-apply 검토와 작업계획을 작성해 주세요. 실제 서버 변경, 정책 적용, 스캐너 실행, credential 접근은 하지 않습니다.
 
 Hermes intake:
 - path: `{intake_path}`
@@ -129,8 +129,9 @@ Hermes intake:
 요청 작업:
 1. intake 후보를 읽고 중복/후보 정리를 수행합니다.
 2. 각 항목에 대해 관리 서버/프로젝트 관련성, 위험도, 신뢰도, 근거 부족 여부를 평가합니다.
-3. medium/high 또는 evidence-insufficient 항목은 `/home/ktl/projects/cybersecurity-agent/reports/security-intelligence/` 아래 no-apply 리스크 리포트 또는 작업계획 초안으로 남깁니다.
-4. 사용자에게 보고할 요약에는 위험도, 근거, 불확실성, 다음 승인 필요 작업을 구분합니다.
+3. medium/high 또는 evidence-insufficient 항목은 `/home/ktl/projects/cybersecurity-agent/reports/security-intelligence/` 아래 no-apply 리스크 리포트와 작업계획 초안으로 남깁니다.
+4. 작업계획에는 목표, 관련 기사/근거, 영향 후보, 확인할 증거, 필요한 승인, 중단 조건을 구분합니다.
+5. collaboration board에는 보안 카테고리의 검토/작업계획 handoff로 남길 수 있게 요약합니다.
 
 금지/중단 조건:
 - 정책 결정, 룰 활성화, 탐지/스캐너/런북 적용, 서버 변경, credential 접근 금지.
@@ -203,6 +204,11 @@ def main() -> int:
             "request_id": f"REQ-HERMES-SECURITY-INTEL-{kst_today}",
             "from_project": "hermes-agent",
             "to_project": "cybersecurity-agent",
+            "kind": "request",
+            "subtype": "security_intelligence_daily",
+            "category": "security",
+            "audience": "security",
+            "action_required": True,
             "priority": "medium",
             "title": f"Daily security intelligence review from Hermes intake {kst_today}",
             "body": build_review_body(result),
